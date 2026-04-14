@@ -1,0 +1,12 @@
+-- =============================================================================
+-- Use the two-part setup (GUI-safe, no psql backslash commands):
+--
+--   1) 01-create-role-and-database.sql   — connect to database: postgres
+--   2) 02-grants-in-retail-dashboard.sql — connect to database: retail_dashboard
+--
+-- psql example:
+--   psql -U postgres -f scripts/postgres/01-create-role-and-database.sql
+--   psql -U postgres -d retail_dashboard -f scripts/postgres/02-grants-in-retail-dashboard.sql
+--
+-- Lines like \set and \c are only valid in the psql client; pgAdmin/DBeaver error on them.
+-- =============================================================================

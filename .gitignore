@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+!apps/server/certs/.gitkeep
+
+# Build outputs
+dist/
+build/
+.next/
+*.tsbuildinfo
+
+# Logs and runtime
+logs/
+*.log
+npm-debug.log*
+pnpm-debug.log*
+data/
+
+# IDE
+.idea/
+.vscode/*
+!.vscode/extensions.json
+!.vscode/launch.json
+!.vscode/tasks.json
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Prisma
+apps/server/prisma/*.db
+apps/server/prisma/*.db-journal
+
+# Test / coverage
+coverage/
+.nyc_output/
+
+# Misc
+*.local

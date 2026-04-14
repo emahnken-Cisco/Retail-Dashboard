@@ -1,0 +1,27 @@
+{
+  "name": "retail-operations-dashboard",
+  "private": true,
+  "workspaces": [
+    "apps/server",
+    "apps/web"
+  ],
+  "scripts": {
+    "dev": "concurrently -n server,web -c blue,green \"npm run dev -w apps/server\" \"npm run dev -w apps/web\"",
+    "build": "npm run build -w apps/web && npm run build -w apps/server",
+    "db:generate": "node scripts/prisma-generate.cjs",
+    "db:migrate": "dotenv -e .env -- prisma migrate deploy --schema ./apps/server/prisma/schema.prisma",
+    "db:push": "dotenv -e .env -- prisma db push --schema ./apps/server/prisma/schema.prisma",
+    "postinstall": "node scripts/prisma-generate.cjs",
+    "lint": "npm run lint -w apps/server && npm run lint -w apps/web"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "dotenv": "^16.4.7",
+    "dotenv-cli": "^8.0.0",
+    "prisma": "^6.19.3",
+    "typescript": "^5.7.2"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

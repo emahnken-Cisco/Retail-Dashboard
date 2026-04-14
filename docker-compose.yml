@@ -1,0 +1,35 @@
+# Optional local PostgreSQL for development (see README “Quick start”).
+#
+#   docker compose up -d
+#
+# Set DATABASE_URL in the repo root `.env` to match the credentials below, for example:
+#   postgresql://retail:retail_dev_change_me@localhost:5432/retail_dashboard?schema=public
+#
+# If you set POSTGRES_PASSWORD in `.env`, use the same password in DATABASE_URL (Compose substitutes it here).
+# Then: npm run db:migrate
+#
+# Do not expose port 5432 to the internet in production; use a managed DB or private network.
+
+name: retail-dashboard
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: retail
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-retail_dev_change_me}
+      POSTGRES_DB: retail_dashboard
+    ports:
+      - "5432:5432"
+    volumes:
+      - retail_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U retail -d retail_dashboard"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  retail_pg_data:
