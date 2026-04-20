@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
+import { CircuitBulkImport } from "../components/CircuitBulkImport.js";
 import { api } from "../api.js";
 import { useAuth } from "../auth.js";
 import { canEditStores } from "../lib/roles.js";
@@ -351,6 +352,10 @@ export function CircuitsPage() {
         <p style={{ color: "var(--danger)", fontSize: "0.9rem" }} role="alert">
           {err}
         </p>
+      ) : null}
+
+      {canEdit ? (
+        <CircuitBulkImport exportSiteId={filterSiteId || undefined} onCommitted={() => void loadCircuits()} />
       ) : null}
 
       <section className="card" style={{ marginTop: "1.25rem" }}>

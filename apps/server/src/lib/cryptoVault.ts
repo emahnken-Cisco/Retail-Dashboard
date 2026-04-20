@@ -5,14 +5,42 @@ import { config } from "../config.js";
 const ALGO = "aes-256-gcm";
 const IV_LEN = 12;
 const KEY_LEN = 32;
-const SALT = "retail-dashboard-v1";
+/**
+ * Fallback salt used when `CREDENTIALS_SALT` is not set in the environment. This string is
+ * intentionally stable so existing deployments continue to decrypt rows that were written
+ * under the previous (static-salt) version of this module. New installs should always
+ * configure `CREDENTIALS_SALT` with an install-specific random value — a per-install salt
+ * means that an attacker who obtains a database dump cannot reuse scrypt precomputation
+ * work across different "retail-dashboard" installations.
+ */
+const LEGACY_SALT = "retail-dashboard-v1";
+let warnedAboutLegacySalt = false;
+
+function resolveSalt(): string {
+  if (config.CREDENTIALS_SALT) {
+    return config.CREDENTIALS_SALT;
+  }
+  if (!warnedAboutLegacySalt) {
+    // Log exactly once per process so the operator sees it, but don't spam every call.
+    console.warn(
+      "cryptoVault: using fallback salt. Set CREDENTIALS_SALT to a unique 16+ character " +
+        "value generated with `openssl rand -base64 32` for per-install KDF hardening.",
+    );
+    warnedAboutLegacySalt = true;
+  }
+  return LEGACY_SALT;
+}
 
 function getKey(): Buffer {
+  // A 32-byte base64 value is treated as a raw AES-256 key — the operator has already done
+  // the key-generation work and we don't need to run a KDF. Anything else (including base64
+  // strings that happen to decode to a different length) is treated as a passphrase and run
+  // through scrypt with the configured salt so we still get a 32-byte key.
   const raw = Buffer.from(config.CREDENTIALS_MASTER_KEY, "base64");
   if (raw.length === KEY_LEN) {
     return raw;
   }
-  return scryptSync(config.CREDENTIALS_MASTER_KEY, SALT, KEY_LEN);
+  return scryptSync(config.CREDENTIALS_MASTER_KEY, resolveSalt(), KEY_LEN);
 }
 
 export function encryptSecret(plain: string): { ciphertext: string; iv: string; authTag: string } {

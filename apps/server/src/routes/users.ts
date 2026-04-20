@@ -4,20 +4,42 @@ import bcrypt from "bcrypt";
 import { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { requireOrgAdmin } from "../lib/rbac.js";
+import { passwordSchema } from "../lib/passwordPolicy.js";
 
 const roleSchema = z.enum(["ORG_ADMIN", "LOCATION_CIRCUIT", "USER"]);
 
 const createBody = z.object({
   email: z.string().email(),
-  password: z.string().min(10),
+  password: passwordSchema,
   role: roleSchema,
 });
 
 const patchBody = z.object({
   email: z.string().email().optional(),
   role: roleSchema.optional(),
-  password: z.string().min(10).optional(),
+  password: passwordSchema.optional(),
 });
+
+/**
+ * Guard against operations that would leave the system without any ORG_ADMIN user, which
+ * would be an unrecoverable lockout: there's no other path back to admin privileges short
+ * of DB surgery. Pass the ID of the user about to be deleted or demoted; returns the
+ * user-facing reason when the operation must be refused.
+ */
+async function assertNotRemovingLastOrgAdmin(targetUserId: string): Promise<string | null> {
+  const target = await prisma.user.findUnique({
+    where: { id: targetUserId },
+    select: { role: true },
+  });
+  if (!target || target.role !== UserRole.ORG_ADMIN) {
+    return null;
+  }
+  const adminCount = await prisma.user.count({ where: { role: UserRole.ORG_ADMIN } });
+  if (adminCount <= 1) {
+    return "Cannot remove the last organization admin. Create another admin first.";
+  }
+  return null;
+}
 
 export async function usersRoutes(app: FastifyInstance): Promise<void> {
   app.get(
@@ -98,6 +120,15 @@ export async function usersRoutes(app: FastifyInstance): Promise<void> {
       if (Object.keys(data).length === 0) {
         return reply.code(400).send({ error: "No changes" });
       }
+      // Block role changes that would leave the system with zero ORG_ADMINs — that path has
+      // no supported recovery and is especially risky when the admin doing the PATCH is
+      // demoting themselves (or has been socially-engineered into doing so).
+      if (data.role !== undefined && data.role !== UserRole.ORG_ADMIN) {
+        const reason = await assertNotRemovingLastOrgAdmin(id);
+        if (reason) {
+          return reply.code(400).send({ error: reason });
+        }
+      }
       try {
         const user = await prisma.user.update({
           where: { id },
@@ -130,6 +161,10 @@ export async function usersRoutes(app: FastifyInstance): Promise<void> {
       const sessionId = req.session?.userId as string | undefined;
       if (sessionId === id) {
         return reply.code(400).send({ error: "You cannot delete your own account" });
+      }
+      const reason = await assertNotRemovingLastOrgAdmin(id);
+      if (reason) {
+        return reply.code(400).send({ error: reason });
       }
       try {
         await prisma.user.delete({ where: { id } });

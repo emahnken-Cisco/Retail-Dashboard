@@ -13,6 +13,26 @@ import { config } from "../config.js";
 import { UserRole } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
 import { getAdminSettings } from "../lib/settings.js";
+import { validateExternalHttpsUrl } from "../lib/urlGuard.js";
+
+/**
+ * Validate the issuer URL before handing it to `discovery()`. An ORG_ADMIN can set
+ * `oidcIssuerUrl` to any string from the admin UI, which — without this gate — is a direct
+ * SSRF primitive: the server fetches `<issuer>/.well-known/openid-configuration` and we'd
+ * happily follow a URL pointing at AWS metadata (`169.254.169.254`), an internal service,
+ * or a non-HTTPS endpoint. The guard enforces HTTPS, blocks private/link-local/loopback
+ * ranges and the classic ".internal" / ".local" suffixes, and — if the operator supplied
+ * `OIDC_ISSUER_ALLOWLIST` — restricts the origin to that list.
+ */
+function validateIssuerUrl(raw: string): { ok: true; url: URL } | { ok: false; reason: string } {
+  const check = validateExternalHttpsUrl(raw, {
+    allowList: config.OIDC_ISSUER_ALLOW_LIST,
+  });
+  if (!check.ok) {
+    return check;
+  }
+  return { ok: true, url: check.url };
+}
 
 function callbackUri(): string {
   const base = config.PUBLIC_URL.replace(/\/$/, "");
@@ -46,8 +66,17 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(500).send({ error: "OIDC issuer, client ID, or client secret missing" });
     }
 
+    const issuerCheck = validateIssuerUrl(issuerUrl);
+    if (!issuerCheck.ok) {
+      req.log.warn(
+        { reason: issuerCheck.reason, issuerUrl },
+        "oidc: refusing to start login flow — issuer URL failed SSRF guard",
+      );
+      return reply.code(500).send({ error: `Invalid OIDC issuer URL: ${issuerCheck.reason}` });
+    }
+
     const conf = await discovery(
-      new URL(issuerUrl),
+      issuerCheck.url,
       clientId,
       { redirect_uris: [callbackUri()] },
       ClientSecretPost(clientSecret),
@@ -85,8 +114,17 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(500).send({ error: "OIDC misconfigured" });
     }
 
+    const issuerCheck = validateIssuerUrl(issuerUrl);
+    if (!issuerCheck.ok) {
+      req.log.warn(
+        { reason: issuerCheck.reason, issuerUrl },
+        "oidc: refusing to complete callback — issuer URL failed SSRF guard",
+      );
+      return reply.code(500).send({ error: "OIDC misconfigured" });
+    }
+
     const conf = await discovery(
-      new URL(issuerUrl),
+      issuerCheck.url,
       clientId,
       { redirect_uris: [callbackUri()] },
       ClientSecretPost(clientSecret),
@@ -104,9 +142,6 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       return reply.code(400).send({ error: "OIDC callback failed" });
     }
 
-    req.session.oidcCodeVerifier = undefined;
-    req.session.oidcState = undefined;
-
     const claims = tokens.claims();
     const emailRaw = claims?.email ?? claims?.sub;
     if (!emailRaw || typeof emailRaw !== "string") {
@@ -122,6 +157,11 @@ export async function oidcRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // Regenerate the session ID before binding the authenticated user. The pre-auth session
+    // only held the one-time OIDC state + PKCE verifier, both consumed above — rotating the
+    // ID here prevents a fixed pre-auth cookie from being carried into the authenticated
+    // state. `regenerate` wipes the prior session, so we set `userId` after.
+    await req.session.regenerate();
     req.session.userId = user.id;
 
     const front = (process.env.FRONTEND_URL ?? config.PUBLIC_URL).replace(/\/$/, "");

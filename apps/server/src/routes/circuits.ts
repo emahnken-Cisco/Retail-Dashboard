@@ -7,6 +7,13 @@ import { requireSiteEditor } from "../lib/rbac.js";
 import { resolvedLocalContactFromSite } from "../lib/resolvedCircuitContact.js";
 import { CIRCUIT_EVENT_KIND_PUBLIC_IP_CHANGE } from "../lib/circuitEventRecorder.js";
 import { isPrismaSchemaMismatchError } from "../lib/prismaErrors.js";
+import {
+  CIRCUIT_IMPORT_SAMPLE_CSV,
+  commitCircuitImportRows,
+  formatCircuitInventoryCsv,
+  importBodyShapeSchema,
+  validateCircuitImportRows,
+} from "../lib/circuitBulkImport.js";
 
 const connectivityEnum = z.enum(["DIA", "BROADBAND", "SATELLITE", "CELLULAR_4G_5G"]);
 
@@ -205,6 +212,95 @@ export async function circuitsRoutes(app: FastifyInstance): Promise<void> {
         orderBy: [{ site: { displayOrder: "asc" } }, { displayOrder: "asc" }, { providerName: "asc" }],
       });
       return { circuits: rows.map((r) => jsonCircuitRow(r)) };
+    },
+  );
+
+  app.get(
+    "/api/circuits/import/sample",
+    { preHandler: requireAuth },
+    async (_req, reply) => {
+      const filename = `circuit_import_sample_${new Date().toISOString().slice(0, 10)}.csv`;
+      void reply
+        .header("Content-Type", "text/csv; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${filename}"`);
+      return reply.send("\uFEFF" + CIRCUIT_IMPORT_SAMPLE_CSV);
+    },
+  );
+
+  app.get(
+    "/api/circuits/import/export",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const q = req.query as { siteId?: string };
+      const where = q.siteId?.trim() ? { siteId: q.siteId.trim() } : {};
+      const rows = await prisma.circuit.findMany({
+        where,
+        include: { site: { select: siteSelectForCircuit }, speedPreset: true },
+        orderBy: [{ site: { displayOrder: "asc" } }, { displayOrder: "asc" }, { providerName: "asc" }],
+      });
+      const csv = formatCircuitInventoryCsv(
+        rows.map((r) => ({
+          connectivityKind: r.connectivityKind,
+          providerName: r.providerName,
+          carrierCircuitId: r.carrierCircuitId,
+          speedPresetId: r.speedPresetId,
+          customSpeedLabel: r.customSpeedLabel,
+          isSynchronous: r.isSynchronous,
+          siteLocalContactSlot: r.siteLocalContactSlot,
+          merakiInterface: r.merakiInterface,
+          merakiApplianceSerial: r.merakiApplianceSerial,
+          notes: r.notes,
+          displayOrder: r.displayOrder,
+          site: {
+            id: r.site.id,
+            name: r.site.name,
+            merakiNetworkId: r.site.merakiNetworkId,
+            localContactPrimaryName: r.site.localContactPrimaryName,
+            localContactPrimaryPhone: r.site.localContactPrimaryPhone,
+            localContactPrimaryEmail: r.site.localContactPrimaryEmail,
+            localContactSecondaryName: r.site.localContactSecondaryName,
+            localContactSecondaryPhone: r.site.localContactSecondaryPhone,
+            localContactSecondaryEmail: r.site.localContactSecondaryEmail,
+          },
+        })),
+      );
+      const filename = `circuit_inventory_${new Date().toISOString().slice(0, 10)}.csv`;
+      void reply
+        .header("Content-Type", "text/csv; charset=utf-8")
+        .header("Content-Disposition", `attachment; filename="${filename}"`);
+      return reply.send("\uFEFF" + csv);
+    },
+  );
+
+  app.post(
+    "/api/circuits/import/validate",
+    { preHandler: requireSiteEditor },
+    async (req, reply) => {
+      const parsed = importBodyShapeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: "Invalid body",
+          hint: "Expected { rows: object[] } with 1–500 rows",
+        });
+      }
+      const out = await validateCircuitImportRows(parsed.data.rows);
+      return out;
+    },
+  );
+
+  app.post(
+    "/api/circuits/import/commit",
+    { preHandler: requireSiteEditor },
+    async (req, reply) => {
+      const parsed = importBodyShapeSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({
+          error: "Invalid body",
+          hint: "Expected { rows: object[] } with 1–500 rows",
+        });
+      }
+      const out = await commitCircuitImportRows(parsed.data.rows);
+      return out;
     },
   );
 

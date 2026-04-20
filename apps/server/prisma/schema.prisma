@@ -24,6 +24,22 @@ model User {
   createdAt    DateTime @default(now())
 }
 
+/**
+ * Server-side session store. Replaces the @fastify/session default in-memory store so
+ * sessions survive process restarts, work across horizontally scaled instances, and can
+ * be forcibly revoked (logout, password rotation, admin action). Row body is the JSON
+ * payload as serialized by the store in apps/server/src/lib/sessionStore.ts.
+ */
+model Session {
+  id        String   @id
+  data      String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([expiresAt])
+}
+
 enum CircuitConnectivityKind {
   DIA
   BROADBAND
@@ -109,10 +125,22 @@ model Circuit {
   updatedAt             DateTime                @updatedAt
   outageEvents          CircuitOutageEvent[]
   circuitEvents         CircuitEvent[]
+  importIdempotencies   CircuitImportIdempotency[]
 
   @@index([siteId])
   @@index([connectivityKind])
   @@index([providerName])
+}
+
+/** Dedupes circuit bulk-import commits when clients retry with the same idempotency key per row. */
+model CircuitImportIdempotency {
+  id               String   @id @default(cuid())
+  idempotencyKey   String   @unique
+  circuitId        String
+  circuit          Circuit  @relation(fields: [circuitId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now())
+
+  @@index([circuitId])
 }
 
 /** Derived from Meraki ingest when an interface moves from healthy to unhealthy (and close when it recovers). */

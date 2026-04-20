@@ -8,6 +8,8 @@ import { requireOrgAdmin } from "../lib/rbac.js";
 import { runMerakiIngest } from "../jobs/merakiIngest.js";
 import { runThousandEyesIngest } from "../jobs/thousandEyesIngest.js";
 import { runRetentionPurge } from "../jobs/retention.js";
+import { validateExternalHttpsUrl } from "../lib/urlGuard.js";
+import { config } from "../config.js";
 
 const lensesSchema = z
   .object({
@@ -107,6 +109,20 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       }
       if (parsed.data.oidcEnabled !== undefined) data.oidcEnabled = parsed.data.oidcEnabled;
       if (parsed.data.oidcIssuerUrl !== undefined) {
+        // Reject issuer URLs that could be used for SSRF (private ranges, http://, creds in
+        // the authority, disallowed origin). A second, redundant check also runs at
+        // login/callback time — catching it here gives admins instant feedback instead of
+        // a broken SSO flow later, and keeps known-bad values from being persisted.
+        if (parsed.data.oidcIssuerUrl !== null) {
+          const issuerCheck = validateExternalHttpsUrl(parsed.data.oidcIssuerUrl, {
+            allowList: config.OIDC_ISSUER_ALLOW_LIST,
+          });
+          if (!issuerCheck.ok) {
+            return reply
+              .code(400)
+              .send({ error: `Invalid OIDC issuer URL: ${issuerCheck.reason}` });
+          }
+        }
         data.oidcIssuerUrl = parsed.data.oidcIssuerUrl;
       }
       if (parsed.data.oidcClientId !== undefined) {

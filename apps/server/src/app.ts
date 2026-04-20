@@ -24,6 +24,8 @@ import { tlsRoutes } from "./routes/tls.js";
 import { usersRoutes } from "./routes/users.js";
 import { oidcRoutes } from "./routes/oidc.js";
 import { replyIfPrismaSchemaMismatch } from "./lib/prismaErrors.js";
+import { originGuard } from "./lib/originGuard.js";
+import { prismaSessionStore } from "./lib/sessionStore.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -35,8 +37,12 @@ export async function buildApp() {
     existsSync(config.TLS_CERT_PATH) &&
     existsSync(config.TLS_KEY_PATH);
 
+  // When deployed behind a TLS-terminating proxy, trust X-Forwarded-* so req.protocol
+  // reflects the client-facing scheme (required for secure cookie detection and for
+  // rate limiting to key off the real client IP rather than the proxy's).
   const app = Fastify({
     logger: true,
+    trustProxy: config.TRUST_PROXY,
     ...(useHttps
       ? {
           https: {
@@ -60,9 +66,26 @@ export async function buildApp() {
         : false,
   });
 
+  // Strict CORS allow list. Browser requests from origins outside this list fail preflight
+  // and never reach route handlers, which — combined with `credentials: true` — blocks the
+  // "reflected origin + cookies" cross-site read class entirely. Same-origin requests (the
+  // SPA is served from the API host) don't need CORS at all and pass through transparently.
+  const corsAllowList = config.ORIGIN_ALLOW_LIST;
   await app.register(cors, {
-    origin: true,
     credentials: true,
+    origin: (origin, cb) => {
+      // Non-browser clients (curl, server-side scripts) and same-origin SPA requests don't
+      // set an Origin header; let those through so health checks and internal jobs work.
+      if (!origin) {
+        cb(null, true);
+        return;
+      }
+      if (corsAllowList.includes(origin)) {
+        cb(null, true);
+        return;
+      }
+      cb(new Error(`CORS: origin ${origin} not allowed`), false);
+    },
   });
 
   await app.register(rateLimit, {
@@ -71,17 +94,36 @@ export async function buildApp() {
   });
 
   await app.register(cookie);
+  // Production cookie hardening: require HTTPS explicitly (no "auto", which can be spoofed
+  // when the reverse proxy's X-Forwarded-Proto isn't trusted), keep SameSite=Lax so the
+  // OIDC top-level-redirect callback still attaches the session, and rely on the originGuard
+  // hook below for mutating-request CSRF defense. Sessions persist in Postgres so they
+  // survive restarts and scale across instances.
+  //
+  // `__Host-` prefix in production: the browser enforces that cookies named with this prefix
+  // are `Secure`, scoped to `Path=/`, and have no `Domain` attribute — which is exactly our
+  // shape. Effect: another app on a sibling subdomain cannot overwrite or read this cookie
+  // via `document.cookie`, and the browser won't accept it over plain HTTP. Dev (HTTP) falls
+  // back to the plain name because `__Host-` requires `Secure`. Deploying this change forces
+  // a one-time re-login since the cookie name changed.
+  const sessionCookieName =
+    config.NODE_ENV === "production" && config.HTTPS_ENABLED ? "__Host-rsid" : "rsid";
   await app.register(session, {
     secret: config.SESSION_SECRET,
-    cookieName: "rsid",
+    cookieName: sessionCookieName,
+    store: prismaSessionStore,
     cookie: {
       path: "/",
       httpOnly: true,
-      secure: config.NODE_ENV === "production" ? "auto" : false,
+      secure: config.NODE_ENV === "production",
       sameSite: "lax",
       maxAge: 8 * 60 * 60 * 1000,
     },
   });
+
+  // CSRF defense: reject POST/PUT/PATCH/DELETE whose Origin (or Referer) isn't in the allow
+  // list. Runs after session middleware so we still have req.session for downstream handlers.
+  app.addHook("preHandler", originGuard);
 
   await app.register(multipart, {
     limits: { fileSize: 2 * 1024 * 1024 },
@@ -122,17 +164,48 @@ export async function buildApp() {
       return;
     }
     const statusCode = error.statusCode ?? 500;
-    if (statusCode >= 500) {
-      request.log.error({ err: error }, error.message);
+    const isServerError = statusCode >= 500;
+    if (isServerError) {
+      // Log with request.id so the operator can grep the server log by the same correlation
+      // id returned to the client. `err` is serialized by pino-std-serializers which includes
+      // the stack trace — this is what you want when diagnosing a 500 from a bug report.
+      request.log.error(
+        { err: error, reqId: request.id, url: request.url, method: request.method },
+        "unhandled error returned 500",
+      );
     }
     if (reply.sent) {
       return;
     }
-    const body: { error: string; statusCode: number; details?: unknown } = {
-      error: error.message,
+    // 4xx responses carry the explicit message set by the route handler (safe by design —
+    // we author those strings). 5xx responses are by definition unexpected, so the message
+    // can contain Prisma error text, file paths, stack fragments, or other internals that
+    // assist an attacker doing reconnaissance. Replace with a generic string and surface the
+    // real details only through the structured logger. Same reasoning for `validation` —
+    // only emit it on 4xx so attackers can't harvest internal schema paths from 5xx.
+    const body: {
+      error: string;
+      statusCode: number;
+      requestId?: string;
+      details?: unknown;
+      devMessage?: string;
+    } = {
+      error: isServerError ? "Internal server error" : error.message,
       statusCode,
     };
-    if (error.validation) {
+    if (isServerError) {
+      // Echo the request id so a user reporting "I got 500 at 10:42am" can be matched to a
+      // specific log line. The id is a short, random Fastify-generated string — it carries
+      // no PII and no internal topology, so it's safe to surface.
+      body.requestId = request.id;
+      // In local development, also include the real error message on 500s. This makes dev
+      // debugging dramatically easier while preserving the production hardening posture —
+      // production deploys run NODE_ENV=production and get only the generic message + id.
+      if (config.NODE_ENV === "development" && error.message) {
+        body.devMessage = error.message;
+      }
+    }
+    if (!isServerError && error.validation) {
       body.details = error.validation;
     }
     void reply.status(statusCode).send(body);

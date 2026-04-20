@@ -1,0 +1,2070 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Retail Operations Dashboard — Overview mockup</title>
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+      integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+      crossorigin=""
+    />
+    <style>
+      :root {
+        --bg: #0f1419;
+        --surface: #172029;
+        --surface-2: #1d2833;
+        --border: #2a3845;
+        --text: #e4eaf0;
+        --muted: #8a97a6;
+        --accent: #4da6ff;
+        --accent-2: #00c2a8;
+        --ok: #2ecc71;
+        --warn: #f5a623;
+        --danger: #ff5c5c;
+        --danger-bg: #3a1c1c;
+        --warn-bg: #3a2d1a;
+        --ok-bg: #1a3020;
+        --info-bg: #1a2a3a;
+        --callout-bg: #111a22;
+        --callout-border: #4da6ff;
+        --callout-border-muted: #3a4a5a;
+        --mono: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        background: #080c10;
+        color: var(--text);
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+          sans-serif;
+        font-size: 14px;
+        line-height: 1.45;
+      }
+
+      a {
+        color: var(--accent);
+      }
+
+      .page-shell {
+        max-width: 1720px;
+        margin: 0 auto;
+        padding: 24px;
+      }
+
+      .page-title {
+        font-size: 28px;
+        font-weight: 700;
+        margin: 0 0 4px;
+        letter-spacing: -0.01em;
+      }
+
+      .page-subtitle {
+        color: var(--muted);
+        font-size: 14px;
+        margin: 0 0 20px;
+      }
+
+      .doc-intro {
+        background: var(--callout-bg);
+        border: 1px solid var(--border);
+        border-left: 4px solid var(--accent);
+        padding: 14px 18px;
+        border-radius: 6px;
+        margin-bottom: 32px;
+      }
+      .doc-intro h3 {
+        margin: 0 0 6px;
+        font-size: 14px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: var(--accent);
+      }
+      .doc-intro p {
+        margin: 6px 0 0;
+        color: var(--muted);
+      }
+
+      /* === App shell (sidebar + main) === */
+      .app {
+        display: grid;
+        grid-template-columns: 220px 1fr;
+        gap: 0;
+        background: var(--bg);
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+        box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+      }
+      .sidebar {
+        background: var(--surface);
+        border-right: 1px solid var(--border);
+        padding: 18px 0;
+      }
+      .brand {
+        padding: 0 20px 18px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        border-bottom: 1px solid var(--border);
+        margin-bottom: 14px;
+      }
+      .brand-mark {
+        width: 30px;
+        height: 30px;
+        border-radius: 7px;
+        background: linear-gradient(135deg, var(--accent), var(--accent-2));
+        display: grid;
+        place-items: center;
+        font-weight: 700;
+        color: #0f1419;
+      }
+      .brand-label {
+        font-weight: 600;
+        font-size: 13px;
+      }
+      .brand-sub {
+        font-size: 11px;
+        color: var(--muted);
+      }
+      .nav {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .nav a {
+        color: var(--muted);
+        padding: 9px 20px;
+        text-decoration: none;
+        font-size: 13.5px;
+        border-left: 3px solid transparent;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+      }
+      .nav a.active {
+        color: var(--text);
+        background: var(--surface-2);
+        border-left-color: var(--accent);
+        font-weight: 600;
+      }
+      .nav a .icon {
+        display: inline-block;
+        width: 14px;
+        text-align: center;
+        opacity: 0.85;
+      }
+
+      .topbar {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 14px 24px;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface);
+      }
+      .topbar .search {
+        flex: 1;
+        max-width: 420px;
+        margin-right: 16px;
+        padding: 8px 12px;
+        border: 1px solid var(--border);
+        background: var(--surface-2);
+        border-radius: 6px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .topbar .actions {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .avatar {
+        width: 30px;
+        height: 30px;
+        border-radius: 50%;
+        background: var(--accent);
+        color: #0f1419;
+        font-weight: 700;
+        display: grid;
+        place-items: center;
+        font-size: 12px;
+      }
+
+      .main {
+        padding: 22px 24px 32px;
+        background: var(--bg);
+      }
+
+      /* === Sections === */
+      .section {
+        margin-bottom: 28px;
+      }
+      .section-title-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        margin-bottom: 10px;
+      }
+      .section-title {
+        font-size: 18px;
+        font-weight: 700;
+        margin: 0;
+      }
+      .section-hint {
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .section-badge {
+        display: inline-block;
+        font-family: var(--mono);
+        font-size: 10.5px;
+        padding: 3px 7px;
+        border-radius: 4px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        color: var(--accent);
+        letter-spacing: 0.04em;
+        margin-left: 10px;
+        text-transform: uppercase;
+      }
+
+      .feature-callout {
+        margin-top: 12px;
+        padding: 12px 14px;
+        background: var(--callout-bg);
+        border: 1px solid var(--border);
+        border-left: 3px solid var(--callout-border);
+        border-radius: 6px;
+      }
+      .feature-callout h4 {
+        margin: 0 0 6px;
+        color: var(--accent);
+        font-size: 11px;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .feature-callout ul {
+        margin: 4px 0 0;
+        padding-left: 18px;
+        color: var(--muted);
+      }
+      .feature-callout ul li {
+        margin: 3px 0;
+        font-size: 12.5px;
+      }
+      .feature-callout ul li strong {
+        color: var(--text);
+        font-weight: 600;
+      }
+      .feature-callout .role-chip {
+        display: inline-block;
+        padding: 1px 7px;
+        border-radius: 10px;
+        font-size: 10px;
+        margin-right: 4px;
+        border: 1px solid var(--border);
+        color: var(--muted);
+        background: var(--surface);
+        font-family: var(--mono);
+      }
+      .role-chip.admin {
+        color: #c5e1ff;
+        border-color: #2a4c6e;
+      }
+      .role-chip.editor {
+        color: #b8e6d6;
+        border-color: #245e50;
+      }
+      .role-chip.user {
+        color: #c9c9c9;
+        border-color: #3a3a3a;
+      }
+
+      /* === Cards & common === */
+      .card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 16px;
+      }
+
+      .stat-grid {
+        display: grid;
+        grid-template-columns: repeat(6, 1fr);
+        gap: 12px;
+      }
+      .stat {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px;
+        position: relative;
+      }
+      .stat.ok {
+        border-top: 3px solid var(--ok);
+      }
+      .stat.warn {
+        border-top: 3px solid var(--warn);
+      }
+      .stat.danger {
+        border-top: 3px solid var(--danger);
+      }
+      .stat.info {
+        border-top: 3px solid var(--accent);
+      }
+      .stat .label {
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+      .stat .value {
+        font-size: 28px;
+        font-weight: 700;
+        letter-spacing: -0.01em;
+      }
+      .stat .sub {
+        font-size: 11.5px;
+        color: var(--muted);
+        margin-top: 4px;
+      }
+
+      .toolbar {
+        display: flex;
+        gap: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+        padding: 10px 12px;
+        margin-bottom: 10px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+      }
+      .toolbar .btn {
+        padding: 6px 12px;
+        border-radius: 5px;
+        background: var(--accent);
+        color: #0f1419;
+        font-size: 12.5px;
+        border: 0;
+        font-weight: 600;
+        cursor: pointer;
+      }
+      .toolbar .btn.secondary {
+        background: var(--surface-2);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      .toolbar .chip {
+        font-size: 12px;
+        color: var(--muted);
+        padding: 4px 8px;
+        background: var(--surface-2);
+        border-radius: 4px;
+        border: 1px solid var(--border);
+      }
+
+      /* === Alert banner === */
+      .banner {
+        display: flex;
+        gap: 14px;
+        padding: 14px 16px;
+        border-radius: 8px;
+        border: 1px solid;
+        margin-bottom: 18px;
+        align-items: flex-start;
+      }
+      .banner.danger {
+        background: var(--danger-bg);
+        border-color: #5a2424;
+      }
+      .banner.warn {
+        background: var(--warn-bg);
+        border-color: #5a4424;
+      }
+      .banner .icon-badge {
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        font-size: 15px;
+        flex-shrink: 0;
+      }
+      .banner.danger .icon-badge {
+        background: var(--danger);
+        color: #0f1419;
+      }
+      .banner.warn .icon-badge {
+        background: var(--warn);
+        color: #0f1419;
+      }
+      .banner .title {
+        font-weight: 700;
+        margin: 0;
+        font-size: 15px;
+      }
+      .banner .body {
+        margin: 3px 0 0;
+        color: var(--muted);
+        font-size: 13px;
+      }
+      .banner .body a {
+        color: inherit;
+        border-bottom: 1px dashed currentColor;
+        text-decoration: none;
+      }
+
+      /* === Map === */
+      .map {
+        position: relative;
+        height: 420px;
+        background: #0b1320;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      #us-map {
+        position: absolute;
+        inset: 0;
+        width: 100%;
+        height: 100%;
+        background: #0b1320;
+      }
+      /* Tone the OSM tiles down to match the dark dashboard theme */
+      #us-map .leaflet-tile-pane {
+        filter: brightness(0.72) saturate(0.85) hue-rotate(190deg);
+      }
+      #us-map .leaflet-control-attribution {
+        background: rgba(23, 32, 41, 0.85);
+        color: var(--muted);
+        font-size: 10px;
+      }
+      #us-map .leaflet-control-attribution a {
+        color: var(--accent);
+      }
+      #us-map .leaflet-control-zoom a {
+        background: rgba(23, 32, 41, 0.92);
+        color: var(--text);
+        border-color: var(--border);
+      }
+      #us-map .leaflet-popup-content-wrapper,
+      #us-map .leaflet-popup-tip {
+        background: rgba(23, 32, 41, 0.97);
+        color: var(--text);
+        border: 1px solid var(--border);
+      }
+      #us-map .leaflet-popup-content {
+        margin: 8px 12px;
+        font-size: 12px;
+        line-height: 1.45;
+      }
+      #us-map .leaflet-popup-content strong {
+        color: var(--accent);
+      }
+      .pin {
+        width: 18px;
+        height: 18px;
+        border-radius: 50%;
+        border: 2px solid #0f1419;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.5);
+        cursor: pointer;
+      }
+      .pin.ok {
+        background: var(--ok);
+      }
+      .pin.warn {
+        background: var(--warn);
+      }
+      .pin.danger {
+        background: var(--danger);
+        animation: pulse 1.6s infinite;
+      }
+      @keyframes pulse {
+        0% {
+          box-shadow:
+            0 0 0 0 rgba(255, 92, 92, 0.6),
+            0 2px 8px rgba(0, 0, 0, 0.5);
+        }
+        70% {
+          box-shadow:
+            0 0 0 12px rgba(255, 92, 92, 0),
+            0 2px 8px rgba(0, 0, 0, 0.5);
+        }
+        100% {
+          box-shadow:
+            0 0 0 0 rgba(255, 92, 92, 0),
+            0 2px 8px rgba(0, 0, 0, 0.5);
+        }
+      }
+      .map .map-legend {
+        position: absolute;
+        bottom: 12px;
+        left: 12px;
+        background: rgba(23, 32, 41, 0.92);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 9px 12px;
+        font-size: 12px;
+        color: var(--muted);
+        z-index: 1000;
+      }
+      .map-legend .row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 3px 0;
+      }
+      .map-legend .dot {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+      }
+
+      .map .weather-layer {
+        position: absolute;
+        bottom: 12px;
+        right: 12px;
+        background: rgba(23, 32, 41, 0.92);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 9px 12px;
+        font-size: 12px;
+        z-index: 1000;
+      }
+      .weather-layer .title {
+        color: var(--accent);
+        font-size: 10px;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+      .weather-layer .toggle-row {
+        display: flex;
+        gap: 6px;
+        margin-top: 4px;
+      }
+      .weather-layer .toggle {
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 3px;
+        background: var(--surface-2);
+        color: var(--muted);
+        border: 1px solid var(--border);
+      }
+      .weather-layer .toggle.active {
+        background: var(--accent);
+        color: #0f1419;
+        border-color: var(--accent);
+      }
+      .map .weather-overlay {
+        position: absolute;
+        inset: 0;
+        pointer-events: none;
+        opacity: 0.35;
+        z-index: 450;
+        background:
+          radial-gradient(circle at 20% 35%, rgba(255, 200, 0, 0.8), transparent 8%),
+          radial-gradient(circle at 62% 55%, rgba(120, 200, 255, 0.9), transparent 14%),
+          radial-gradient(circle at 85% 30%, rgba(77, 166, 255, 0.8), transparent 10%),
+          radial-gradient(circle at 75% 75%, rgba(0, 194, 168, 0.7), transparent 12%),
+          radial-gradient(circle at 40% 80%, rgba(255, 92, 92, 0.7), transparent 8%);
+      }
+
+      /* === Tables === */
+      table.table {
+        width: 100%;
+        border-collapse: separate;
+        border-spacing: 0;
+        font-size: 13px;
+      }
+      table.table th {
+        text-align: left;
+        padding: 9px 12px;
+        font-weight: 600;
+        color: var(--muted);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        border-bottom: 1px solid var(--border);
+        background: var(--surface-2);
+      }
+      table.table td {
+        padding: 10px 12px;
+        border-bottom: 1px solid var(--border);
+        vertical-align: middle;
+      }
+      table.table tr:last-child td {
+        border-bottom: 0;
+      }
+
+      .status-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 3px 8px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+      }
+      .status-pill.ok {
+        color: var(--ok);
+        background: rgba(46, 204, 113, 0.12);
+      }
+      .status-pill.warn {
+        color: var(--warn);
+        background: rgba(245, 166, 35, 0.12);
+      }
+      .status-pill.danger {
+        color: var(--danger);
+        background: rgba(255, 92, 92, 0.14);
+      }
+      .status-pill .dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: currentColor;
+      }
+
+      .mono {
+        font-family: var(--mono);
+        font-size: 12px;
+        color: var(--muted);
+      }
+
+      /* === Card grid (locations) === */
+      .loc-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+      }
+      .loc-card {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .loc-card .loc-head {
+        padding: 12px 14px;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 8px;
+        border-bottom: 1px solid var(--border);
+      }
+      .loc-card .loc-name {
+        font-weight: 700;
+        font-size: 14px;
+        margin: 0;
+      }
+      .loc-card .loc-addr {
+        color: var(--muted);
+        font-size: 11.5px;
+        margin: 2px 0 0;
+      }
+      .loc-card .loc-body {
+        padding: 12px 14px;
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 10px 14px;
+      }
+      .loc-card .fact .k {
+        color: var(--muted);
+        font-size: 10px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        margin-bottom: 2px;
+      }
+      .loc-card .fact .v {
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .loc-card .loc-weather {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 10px 14px;
+        background: var(--surface-2);
+        border-top: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .loc-card .loc-weather .wx-ico {
+        font-size: 20px;
+      }
+      .loc-card .loc-circuits {
+        padding: 10px 14px;
+        background: var(--surface-2);
+        border-top: 1px solid var(--border);
+        font-size: 12px;
+      }
+      .loc-card .loc-circuits .c-row {
+        display: flex;
+        justify-content: space-between;
+        gap: 10px;
+        padding: 3px 0;
+      }
+      .loc-card .loc-circuits .c-row .c-left {
+        color: var(--muted);
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+
+      /* === Charts === */
+      .chart-box {
+        height: 170px;
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 12px;
+        position: relative;
+      }
+      .bar-row {
+        display: flex;
+        gap: 3px;
+        align-items: flex-end;
+        height: 100%;
+      }
+      .bar-row .bar {
+        flex: 1;
+        background: var(--accent);
+        border-radius: 2px 2px 0 0;
+        opacity: 0.8;
+      }
+      .bar-row .bar.danger {
+        background: var(--danger);
+        opacity: 0.9;
+      }
+      .bar-row .bar.warn {
+        background: var(--warn);
+      }
+
+      .two-col {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+      }
+      .three-col-kpi {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+        margin-bottom: 10px;
+      }
+      .kpi-mini {
+        background: var(--surface-2);
+        border: 1px solid var(--border);
+        border-radius: 6px;
+        padding: 10px 12px;
+      }
+      .kpi-mini .label {
+        color: var(--muted);
+        font-size: 10.5px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .kpi-mini .val {
+        font-size: 20px;
+        font-weight: 700;
+        margin-top: 3px;
+      }
+      .kpi-mini .delta {
+        font-size: 11px;
+        margin-top: 2px;
+      }
+      .delta.up-good {
+        color: var(--ok);
+      }
+      .delta.down-bad {
+        color: var(--danger);
+      }
+
+      /* === Section index (floating TOC-like) === */
+      .toc {
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        padding: 14px 16px;
+        margin-bottom: 24px;
+      }
+      .toc h3 {
+        margin: 0 0 6px;
+        color: var(--accent);
+        font-size: 11px;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+      }
+      .toc ol {
+        margin: 0;
+        padding-left: 20px;
+        columns: 2;
+        color: var(--muted);
+        font-size: 12.5px;
+      }
+      .toc ol li {
+        margin: 2px 0;
+      }
+      .toc a {
+        color: var(--muted);
+      }
+
+      /* Responsive safety for narrow viewports */
+      @media (max-width: 1200px) {
+        .stat-grid {
+          grid-template-columns: repeat(3, 1fr);
+        }
+        .loc-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+      }
+      @media (max-width: 720px) {
+        .stat-grid {
+          grid-template-columns: repeat(2, 1fr);
+        }
+        .loc-grid {
+          grid-template-columns: 1fr;
+        }
+        .two-col {
+          grid-template-columns: 1fr;
+        }
+        .app {
+          grid-template-columns: 1fr;
+        }
+        .sidebar {
+          display: none;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page-shell">
+      <h1 class="page-title">Retail Operations Dashboard — Overview page mockup</h1>
+      <p class="page-subtitle">
+        Reference mockup for the authenticated Dashboard page (v1.1.0). Not a live
+        application — mock data only.
+      </p>
+
+      <div class="doc-intro">
+        <h3>How to read this mockup</h3>
+        <p>
+          Each section below shows the UI roughly as it appears when a signed-in user lands on
+          the Dashboard. Directly beneath each section is a blue-bordered
+          <strong>Features available here</strong> callout that lists what the user can do
+          there, plus which role(s) see the feature.
+        </p>
+        <p style="margin-top: 8px">
+          Role key:
+          <span class="role-chip admin">ORG_ADMIN</span> full control ·
+          <span class="role-chip editor">LOCATION_CIRCUIT</span> editor ·
+          <span class="role-chip user">USER</span> read-only.
+        </p>
+      </div>
+
+      <div class="toc">
+        <h3>Sections</h3>
+        <ol>
+          <li><a href="#shell">1. App shell and navigation</a></li>
+          <li><a href="#alerts">2. Active incident banner</a></li>
+          <li><a href="#stats">3. KPI strip</a></li>
+          <li><a href="#map">4. Location map with weather overlay</a></li>
+          <li><a href="#failed">5. Failed / degraded circuits</a></li>
+          <li><a href="#cards">6. Location cards grid</a></li>
+          <li><a href="#weather">7. Weather-impacted sites</a></li>
+          <li><a href="#history">8. Historic snapshots</a></li>
+          <li><a href="#reporting">9. Reporting snapshot</a></li>
+        </ol>
+      </div>
+
+      <div class="app">
+        <!-- =================== SIDEBAR =================== -->
+        <aside class="sidebar" id="shell">
+          <div class="brand">
+            <div class="brand-mark">R</div>
+            <div>
+              <div class="brand-label">Retail Ops</div>
+              <div class="brand-sub">v1.1.0</div>
+            </div>
+          </div>
+          <nav class="nav">
+            <a class="active" href="#"><span class="icon">◉</span> Dashboard</a>
+            <a href="#"><span class="icon">▣</span> Locations</a>
+            <a href="#"><span class="icon">≡</span> Circuits</a>
+            <a href="#"><span class="icon">◎</span> Reporting</a>
+            <a href="#"><span class="icon">#</span> Tags</a>
+            <a href="#"><span class="icon">⚙</span> Admin</a>
+            <a href="#"><span class="icon">⌐</span> User admin</a>
+            <a href="#"><span class="icon">⎈</span> API keys</a>
+            <a href="#"><span class="icon">⚑</span> API debug</a>
+          </nav>
+        </aside>
+
+        <!-- =================== MAIN =================== -->
+        <div>
+          <div class="topbar">
+            <input
+              class="search"
+              value="Search locations, circuits, tags…"
+              readonly
+            />
+            <div class="actions">
+              <span>Last ingest 42 s ago</span>
+              <span>·</span>
+              <span>Session keep-alive OK</span>
+              <span>·</span>
+              <span>emahnken@cisco.com</span>
+              <div class="avatar">EM</div>
+            </div>
+          </div>
+
+          <div class="main">
+            <!-- === SECTION: Active incidents === -->
+            <section class="section" id="alerts">
+              <div class="section-title-row">
+                <h2 class="section-title">Active incidents</h2>
+                <span class="section-hint">Auto-refreshed every 30 s</span>
+              </div>
+
+              <div class="banner danger">
+                <div class="icon-badge">!</div>
+                <div>
+                  <p class="title">
+                    3 locations down or degraded · last change 2 min ago
+                  </p>
+                  <p class="body">
+                    <strong>Store #1412 Dallas, TX</strong> — MX WAN1 down, failover to LTE
+                    engaged ·
+                    <strong>Store #2207 Tampa, FL</strong> — ThousandEyes agent offline ·
+                    <strong>Store #3055 Portland, OR</strong> — WAN latency sustained &gt;
+                    450 ms.
+                    <a href="#failed">Jump to circuit list →</a>
+                  </p>
+                </div>
+              </div>
+
+              <div class="banner warn">
+                <div class="icon-badge">⚡</div>
+                <div>
+                  <p class="title">Severe weather near 4 sites</p>
+                  <p class="body">
+                    Thunderstorm warning for Tampa metro · heavy rain for Portland metro.
+                    Weather alerts correlate with 2 of 3 current incidents.
+                    <a href="#weather">See weather impact →</a>
+                  </p>
+                </div>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>Live incident summary</strong> — generated from Meraki and
+                    ThousandEyes ingest, refreshed every 30 s while the tab is visible.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                    <span class="role-chip user">USER</span>
+                  </li>
+                  <li>
+                    <strong>Weather correlation</strong> — surfaces sites where OpenWeather
+                    reports severe conditions within the same incident window.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                    <span class="role-chip user">USER</span>
+                  </li>
+                  <li>
+                    <strong>Deep-link actions</strong> — banner CTAs jump to the relevant
+                    failed-circuit row or weather panel.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                    <span class="role-chip user">USER</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <!-- === SECTION: KPI strip === -->
+            <section class="section" id="stats">
+              <div class="section-title-row">
+                <h2 class="section-title">Fleet at a glance</h2>
+                <span class="section-hint">Based on the latest saved snapshots</span>
+              </div>
+              <div class="stat-grid">
+                <div class="stat info">
+                  <div class="label">Locations</div>
+                  <div class="value">186</div>
+                  <div class="sub">across 37 regions</div>
+                </div>
+                <div class="stat ok">
+                  <div class="label">Healthy</div>
+                  <div class="value">171</div>
+                  <div class="sub">92.0 % online</div>
+                </div>
+                <div class="stat warn">
+                  <div class="label">Degraded</div>
+                  <div class="value">12</div>
+                  <div class="sub">latency &gt; SLO or loss &gt; 2 %</div>
+                </div>
+                <div class="stat danger">
+                  <div class="label">Failed</div>
+                  <div class="value">3</div>
+                  <div class="sub">WAN down / agent offline</div>
+                </div>
+                <div class="stat warn">
+                  <div class="label">Weather alerts</div>
+                  <div class="value">4</div>
+                  <div class="sub">severe within 50 mi</div>
+                </div>
+                <div class="stat info">
+                  <div class="label">Last ingest</div>
+                  <div class="value">42<span style="font-size: 14px">s ago</span></div>
+                  <div class="sub">Meraki + ThousandEyes</div>
+                </div>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>Rolled-up counters</strong> — total, healthy, degraded, and failed
+                    locations computed from snapshot data (no live API calls from the
+                    browser).
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                    <span class="role-chip user">USER</span>
+                  </li>
+                  <li>
+                    <strong>Weather alerts count</strong> — counts of sites with severe
+                    OpenWeather conditions within a configurable radius.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                    <span class="role-chip user">USER</span>
+                  </li>
+                  <li>
+                    <strong>Last ingest indicator</strong> — surfaces a stale-data warning if
+                    the scheduler is paused or API keys are missing.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <!-- === SECTION: Map === -->
+            <section class="section" id="map">
+              <div class="section-title-row">
+                <h2 class="section-title">
+                  Location map
+                  <span class="section-badge">Google Maps</span>
+                </h2>
+                <span class="section-hint">Weather overlay enabled · 186 sites shown</span>
+              </div>
+
+              <div class="toolbar">
+                <button class="btn">Refresh</button>
+                <button class="btn secondary">Fit all sites</button>
+                <span class="chip">Card columns: 3</span>
+                <span class="chip">Auto-refresh 30 s</span>
+                <span class="chip">Google Maps API: OK</span>
+                <span class="chip">OpenWeather: configured</span>
+              </div>
+
+              <div class="map">
+                <div id="us-map" role="img" aria-label="US map of store locations"></div>
+                <div class="weather-overlay"></div>
+
+                <div class="map-legend">
+                  <div><strong style="color: var(--text)">Pin status</strong></div>
+                  <div class="row">
+                    <span class="dot" style="background: var(--ok)"></span> Healthy (171)
+                  </div>
+                  <div class="row">
+                    <span class="dot" style="background: var(--warn)"></span> Degraded (12)
+                  </div>
+                  <div class="row">
+                    <span class="dot" style="background: var(--danger)"></span> Failed (3)
+                  </div>
+                </div>
+
+                <div class="weather-layer">
+                  <div class="title">Weather overlay</div>
+                  <div>OpenWeatherMap · Temperature</div>
+                  <div class="toggle-row">
+                    <span class="toggle">Off</span>
+                    <span class="toggle active">Temp</span>
+                    <span class="toggle">Precip</span>
+                    <span class="toggle">Wind</span>
+                    <span class="toggle">Clouds</span>
+                  </div>
+                </div>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>Interactive US map</strong> — pan, zoom, and click a pin to open
+                    that location's detail panel. The production dashboard uses the Google
+                    Maps JavaScript API (configured under <em>Admin → API keys</em>); this
+                    mockup renders the same experience with Leaflet + OpenStreetMap so it
+                    stays offline-friendly.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                    <span class="role-chip user">USER</span>
+                  </li>
+                  <li>
+                    <strong>Health-colored pins</strong> — green / amber / red reflect the
+                    most recent Meraki + ThousandEyes snapshot for each site; failed pins
+                    pulse to draw the eye.
+                  </li>
+                  <li>
+                    <strong>Weather overlays</strong> — Temperature, Precipitation, Wind, and
+                    Clouds layers served from OpenWeatherMap. Default layer, opacity, and
+                    units are configurable under <em>Admin → Lenses</em>.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                  </li>
+                  <li>
+                    <strong>Configurable units</strong> — temperature (°F/°C), wind
+                    (mph/m·s/km·h), precipitation (in/mm) come from per-install lens
+                    settings.
+                  </li>
+                  <li>
+                    <strong>Manual vs. ingest coordinates</strong> — each site can override
+                    Meraki-provided lat/lng with a manually-entered value from the Locations
+                    page.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <!-- === SECTION: Failed / degraded circuits === -->
+            <section class="section" id="failed">
+              <div class="section-title-row">
+                <h2 class="section-title">Failed &amp; degraded circuits</h2>
+                <span class="section-hint">Grouped by severity · top 8 shown</span>
+              </div>
+
+              <div class="card" style="padding: 0">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Location</th>
+                      <th>Circuit</th>
+                      <th>Provider</th>
+                      <th>Type</th>
+                      <th>Status</th>
+                      <th>Latency / loss</th>
+                      <th>Down for</th>
+                      <th>Weather</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <strong>Store #1412</strong>
+                        <div class="mono">Dallas, TX · 75201</div>
+                      </td>
+                      <td class="mono">DAL-WAN1</td>
+                      <td>AT&amp;T Fiber</td>
+                      <td>Primary fiber</td>
+                      <td>
+                        <span class="status-pill danger"><span class="dot"></span>
+                          WAN down</span>
+                      </td>
+                      <td><span class="mono">— · —</span></td>
+                      <td><span class="mono">00:12:07</span></td>
+                      <td><span class="mono">Clear, 88 °F</span></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #2207</strong>
+                        <div class="mono">Tampa, FL · 33602</div>
+                      </td>
+                      <td class="mono">TPA-TE1</td>
+                      <td>Verizon LTE</td>
+                      <td>Enterprise agent</td>
+                      <td>
+                        <span class="status-pill danger"><span class="dot"></span>
+                          Agent offline</span>
+                      </td>
+                      <td><span class="mono">— · —</span></td>
+                      <td><span class="mono">00:47:12</span></td>
+                      <td>
+                        <span class="status-pill warn"
+                          ><span class="dot"></span>Thunderstorm</span
+                        >
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #3055</strong>
+                        <div class="mono">Portland, OR · 97204</div>
+                      </td>
+                      <td class="mono">PDX-WAN1</td>
+                      <td>Comcast Business</td>
+                      <td>Primary cable</td>
+                      <td>
+                        <span class="status-pill danger"
+                          ><span class="dot"></span>High latency</span
+                        >
+                      </td>
+                      <td><span class="mono">458 ms · 4.2 %</span></td>
+                      <td><span class="mono">00:23:51</span></td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Heavy rain</span>
+                      </td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #2110</strong>
+                        <div class="mono">Miami, FL · 33130</div>
+                      </td>
+                      <td class="mono">MIA-WAN2</td>
+                      <td>T-Mobile 5G</td>
+                      <td>Cellular failover</td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Degraded</span>
+                      </td>
+                      <td><span class="mono">118 ms · 1.8 %</span></td>
+                      <td><span class="mono">—</span></td>
+                      <td><span class="mono">Scattered storms</span></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #0751</strong>
+                        <div class="mono">Minneapolis, MN · 55401</div>
+                      </td>
+                      <td class="mono">MSP-WAN1</td>
+                      <td>CenturyLink Fiber</td>
+                      <td>Primary fiber</td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>High loss</span>
+                      </td>
+                      <td><span class="mono">72 ms · 3.1 %</span></td>
+                      <td><span class="mono">—</span></td>
+                      <td><span class="mono">Snow, 21 °F</span></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #1815</strong>
+                        <div class="mono">Indianapolis, IN · 46204</div>
+                      </td>
+                      <td class="mono">IND-STAR</td>
+                      <td>Starlink</td>
+                      <td>Satellite backup</td>
+                      <td>
+                        <span class="status-pill warn"
+                          ><span class="dot"></span>Marginal</span
+                        >
+                      </td>
+                      <td><span class="mono">64 ms · 2.4 %</span></td>
+                      <td><span class="mono">—</span></td>
+                      <td><span class="mono">Clear</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>Severity-ordered list</strong> — failed rows first (red),
+                    degraded rows next (amber); backed by the latest Meraki WAN status and
+                    ThousandEyes test-result data.
+                  </li>
+                  <li>
+                    <strong>Circuit identification</strong> — circuit ID, provider, and type
+                    come from the <em>Circuits</em> inventory (manual or bulk-imported via
+                    CSV).
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                  </li>
+                  <li>
+                    <strong>Inline latency / loss</strong> — live enterprise-test metrics
+                    (HTTP, agent-to-server) from ThousandEyes v7; Meraki WAN health when TE
+                    is unavailable.
+                  </li>
+                  <li>
+                    <strong>Weather column</strong> — current conditions at each affected
+                    site, sourced from OpenWeather. Badge turns amber on severe conditions.
+                  </li>
+                  <li>
+                    <strong>Row → detail panel</strong> — clicking a row opens that site's
+                    detail panel with WAN uplink history, TE enterprise test charts, and
+                    snapshot payload inspection.
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <!-- === SECTION: Location cards === -->
+            <section class="section" id="cards">
+              <div class="section-title-row">
+                <h2 class="section-title">Location cards</h2>
+                <span class="section-hint">3 columns · 186 sites paginated</span>
+              </div>
+
+              <div class="loc-grid">
+                <!-- card 1: healthy -->
+                <article class="loc-card">
+                  <div class="loc-head">
+                    <div>
+                      <p class="loc-name">Store #2470 — Midtown</p>
+                      <p class="loc-addr">New York, NY · 10018</p>
+                    </div>
+                    <span class="status-pill ok"><span class="dot"></span>Healthy</span>
+                  </div>
+                  <div class="loc-body">
+                    <div class="fact">
+                      <div class="k">Meraki MX</div>
+                      <div class="v">MX95 · online</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">Clients (24 h peak)</div>
+                      <div class="v">128</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">WAN1 latency</div>
+                      <div class="v">12 ms</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">TE agent</div>
+                      <div class="v">NYC-ret-02 · OK</div>
+                    </div>
+                  </div>
+                  <div class="loc-circuits">
+                    <div class="c-row">
+                      <span class="c-left">NY-WAN1 · Verizon Fiber</span>
+                      <span class="status-pill ok"><span class="dot"></span>UP</span>
+                    </div>
+                    <div class="c-row">
+                      <span class="c-left">NY-WAN2 · T-Mobile 5G</span>
+                      <span class="status-pill ok"><span class="dot"></span>STBY</span>
+                    </div>
+                  </div>
+                  <div class="loc-weather">
+                    <span class="wx-ico">☀</span>
+                    <div>
+                      <div style="font-weight: 600">Clear · 64 °F</div>
+                      <div style="color: var(--muted)">Wind 8 mph · humidity 52 %</div>
+                    </div>
+                  </div>
+                </article>
+
+                <!-- card 2: degraded w/ storm -->
+                <article class="loc-card">
+                  <div class="loc-head">
+                    <div>
+                      <p class="loc-name">Store #2207 — Bayshore</p>
+                      <p class="loc-addr">Tampa, FL · 33602</p>
+                    </div>
+                    <span class="status-pill danger"><span class="dot"></span>Agent offline</span>
+                  </div>
+                  <div class="loc-body">
+                    <div class="fact">
+                      <div class="k">Meraki MX</div>
+                      <div class="v">MX85 · online</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">Clients (24 h peak)</div>
+                      <div class="v">94</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">WAN1 latency</div>
+                      <div class="v" style="color: var(--warn)">186 ms</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">TE agent</div>
+                      <div class="v" style="color: var(--danger)">TPA-ret-07 · offline</div>
+                    </div>
+                  </div>
+                  <div class="loc-circuits">
+                    <div class="c-row">
+                      <span class="c-left">TPA-WAN1 · Spectrum</span>
+                      <span class="status-pill warn"><span class="dot"></span>DEGR</span>
+                    </div>
+                    <div class="c-row">
+                      <span class="c-left">TPA-TE1 · Verizon LTE</span>
+                      <span class="status-pill danger"><span class="dot"></span>DOWN</span>
+                    </div>
+                  </div>
+                  <div class="loc-weather">
+                    <span class="wx-ico">⛈</span>
+                    <div>
+                      <div style="font-weight: 600; color: var(--warn)">Thunderstorm · 81 °F</div>
+                      <div style="color: var(--muted)">Wind 24 mph · 2.1 in/h rain</div>
+                    </div>
+                  </div>
+                </article>
+
+                <!-- card 3: healthy in snow -->
+                <article class="loc-card">
+                  <div class="loc-head">
+                    <div>
+                      <p class="loc-name">Store #0751 — Nicollet</p>
+                      <p class="loc-addr">Minneapolis, MN · 55401</p>
+                    </div>
+                    <span class="status-pill warn"><span class="dot"></span>Loss 3.1 %</span>
+                  </div>
+                  <div class="loc-body">
+                    <div class="fact">
+                      <div class="k">Meraki MX</div>
+                      <div class="v">MX75 · online</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">Clients (24 h peak)</div>
+                      <div class="v">71</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">WAN1 latency</div>
+                      <div class="v">72 ms</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">TE agent</div>
+                      <div class="v">MSP-ret-03 · OK</div>
+                    </div>
+                  </div>
+                  <div class="loc-circuits">
+                    <div class="c-row">
+                      <span class="c-left">MSP-WAN1 · CenturyLink Fiber</span>
+                      <span class="status-pill warn"><span class="dot"></span>LOSS</span>
+                    </div>
+                    <div class="c-row">
+                      <span class="c-left">MSP-STAR · Starlink</span>
+                      <span class="status-pill ok"><span class="dot"></span>STBY</span>
+                    </div>
+                  </div>
+                  <div class="loc-weather">
+                    <span class="wx-ico">❄</span>
+                    <div>
+                      <div style="font-weight: 600">Snow · 21 °F</div>
+                      <div style="color: var(--muted)">Wind 19 mph · 3 in accum.</div>
+                    </div>
+                  </div>
+                </article>
+
+                <!-- card 4: normal -->
+                <article class="loc-card">
+                  <div class="loc-head">
+                    <div>
+                      <p class="loc-name">Store #0210 — SoMa</p>
+                      <p class="loc-addr">San Francisco, CA · 94103</p>
+                    </div>
+                    <span class="status-pill ok"><span class="dot"></span>Healthy</span>
+                  </div>
+                  <div class="loc-body">
+                    <div class="fact">
+                      <div class="k">Meraki MX</div>
+                      <div class="v">MX95 · online</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">Clients (24 h peak)</div>
+                      <div class="v">156</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">WAN1 latency</div>
+                      <div class="v">18 ms</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">TE agent</div>
+                      <div class="v">SFO-ret-11 · OK</div>
+                    </div>
+                  </div>
+                  <div class="loc-circuits">
+                    <div class="c-row">
+                      <span class="c-left">SFO-WAN1 · Comcast Business</span>
+                      <span class="status-pill ok"><span class="dot"></span>UP</span>
+                    </div>
+                    <div class="c-row">
+                      <span class="c-left">SFO-WAN2 · AT&amp;T Fiber</span>
+                      <span class="status-pill ok"><span class="dot"></span>STBY</span>
+                    </div>
+                  </div>
+                  <div class="loc-weather">
+                    <span class="wx-ico">☁</span>
+                    <div>
+                      <div style="font-weight: 600">Overcast · 58 °F</div>
+                      <div style="color: var(--muted)">Wind 12 mph · humidity 78 %</div>
+                    </div>
+                  </div>
+                </article>
+
+                <!-- card 5: WAN1 failed, on failover -->
+                <article class="loc-card">
+                  <div class="loc-head">
+                    <div>
+                      <p class="loc-name">Store #1412 — Uptown</p>
+                      <p class="loc-addr">Dallas, TX · 75201</p>
+                    </div>
+                    <span class="status-pill danger"><span class="dot"></span>WAN1 down</span>
+                  </div>
+                  <div class="loc-body">
+                    <div class="fact">
+                      <div class="k">Meraki MX</div>
+                      <div class="v">MX85 · online (LTE)</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">Clients (24 h peak)</div>
+                      <div class="v">62</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">WAN1 latency</div>
+                      <div class="v" style="color: var(--danger)">— (down)</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">TE agent</div>
+                      <div class="v">DAL-ret-04 · OK (cell)</div>
+                    </div>
+                  </div>
+                  <div class="loc-circuits">
+                    <div class="c-row">
+                      <span class="c-left">DAL-WAN1 · AT&amp;T Fiber</span>
+                      <span class="status-pill danger"><span class="dot"></span>DOWN</span>
+                    </div>
+                    <div class="c-row">
+                      <span class="c-left">DAL-WAN2 · Verizon LTE</span>
+                      <span class="status-pill warn"><span class="dot"></span>ACTIVE</span>
+                    </div>
+                  </div>
+                  <div class="loc-weather">
+                    <span class="wx-ico">☀</span>
+                    <div>
+                      <div style="font-weight: 600">Clear · 88 °F</div>
+                      <div style="color: var(--muted)">Wind 6 mph · humidity 34 %</div>
+                    </div>
+                  </div>
+                </article>
+
+                <!-- card 6: high latency -->
+                <article class="loc-card">
+                  <div class="loc-head">
+                    <div>
+                      <p class="loc-name">Store #3055 — Pearl District</p>
+                      <p class="loc-addr">Portland, OR · 97204</p>
+                    </div>
+                    <span class="status-pill danger"><span class="dot"></span>Latency 458 ms</span>
+                  </div>
+                  <div class="loc-body">
+                    <div class="fact">
+                      <div class="k">Meraki MX</div>
+                      <div class="v">MX75 · online</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">Clients (24 h peak)</div>
+                      <div class="v">88</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">WAN1 latency</div>
+                      <div class="v" style="color: var(--danger)">458 ms</div>
+                    </div>
+                    <div class="fact">
+                      <div class="k">TE agent</div>
+                      <div class="v" style="color: var(--warn)">PDX-ret-01 · 4.2 % loss</div>
+                    </div>
+                  </div>
+                  <div class="loc-circuits">
+                    <div class="c-row">
+                      <span class="c-left">PDX-WAN1 · Comcast Business</span>
+                      <span class="status-pill danger"><span class="dot"></span>HIGH</span>
+                    </div>
+                    <div class="c-row">
+                      <span class="c-left">PDX-WAN2 · T-Mobile 5G</span>
+                      <span class="status-pill ok"><span class="dot"></span>STBY</span>
+                    </div>
+                  </div>
+                  <div class="loc-weather">
+                    <span class="wx-ico">🌧</span>
+                    <div>
+                      <div style="font-weight: 600; color: var(--warn)">Heavy rain · 49 °F</div>
+                      <div style="color: var(--muted)">Wind 22 mph · 1.4 in/h rain</div>
+                    </div>
+                  </div>
+                </article>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>Per-site summary card</strong> — combines Meraki device state,
+                    client counts, WAN latency, TE agent status, circuit inventory, and
+                    weather in a single scannable tile.
+                  </li>
+                  <li>
+                    <strong>Column density control</strong> — 1–6 columns, saved per
+                    deployment under <em>Admin → Lenses → Card columns</em>.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                  </li>
+                  <li>
+                    <strong>Lens visibility toggles</strong> — hide Meraki, ThousandEyes, or
+                    circuit sub-panels per install without code changes.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                  </li>
+                  <li>
+                    <strong>Click → site detail</strong> — opens a full-height panel with
+                    uplink-history charts (Meraki + TE), enterprise-test results, and
+                    snapshot payload inspectors.
+                  </li>
+                  <li>
+                    <strong>Stale-data hinting</strong> — a faded border and "last captured"
+                    timestamp warn when a snapshot has fallen behind the configured ingest
+                    interval.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <!-- === SECTION: Weather correlation === -->
+            <section class="section" id="weather">
+              <div class="section-title-row">
+                <h2 class="section-title">Weather-impacted sites</h2>
+                <span class="section-hint">
+                  OpenWeather · severe conditions within 50 mi
+                </span>
+              </div>
+
+              <div class="card" style="padding: 0">
+                <table class="table">
+                  <thead>
+                    <tr>
+                      <th>Location</th>
+                      <th>Condition</th>
+                      <th>Temp</th>
+                      <th>Wind</th>
+                      <th>Precip</th>
+                      <th>Network impact</th>
+                      <th>Since</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>
+                        <strong>Store #2207 — Bayshore</strong>
+                        <div class="mono">Tampa, FL</div>
+                      </td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Thunderstorm</span>
+                      </td>
+                      <td>81 °F</td>
+                      <td>24 mph gusts 38</td>
+                      <td>2.1 in/h</td>
+                      <td>
+                        <span class="status-pill danger"><span class="dot"></span>Agent offline</span>
+                      </td>
+                      <td><span class="mono">39 min ago</span></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #3055 — Pearl District</strong>
+                        <div class="mono">Portland, OR</div>
+                      </td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Heavy rain</span>
+                      </td>
+                      <td>49 °F</td>
+                      <td>22 mph</td>
+                      <td>1.4 in/h</td>
+                      <td>
+                        <span class="status-pill danger"><span class="dot"></span>High latency</span>
+                      </td>
+                      <td><span class="mono">1 h 14 m ago</span></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #2110 — Brickell</strong>
+                        <div class="mono">Miami, FL</div>
+                      </td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Scattered storms</span>
+                      </td>
+                      <td>84 °F</td>
+                      <td>16 mph</td>
+                      <td>0.3 in/h</td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Degraded cell</span>
+                      </td>
+                      <td><span class="mono">22 min ago</span></td>
+                    </tr>
+                    <tr>
+                      <td>
+                        <strong>Store #0751 — Nicollet</strong>
+                        <div class="mono">Minneapolis, MN</div>
+                      </td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Snow</span>
+                      </td>
+                      <td>21 °F</td>
+                      <td>19 mph</td>
+                      <td>3 in accum.</td>
+                      <td>
+                        <span class="status-pill warn"><span class="dot"></span>Loss 3.1 %</span>
+                      </td>
+                      <td><span class="mono">3 h 02 m ago</span></td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>OpenWeather-powered conditions</strong> — current-conditions
+                    lookup per site lat/lng (manual override or Meraki ingest geo). Caches
+                    responses in-process to respect provider quota.
+                  </li>
+                  <li>
+                    <strong>Severity threshold</strong> — the dashboard surfaces only sites
+                    where OpenWeather reports severe conditions (wind / rain / snow) above
+                    configured thresholds.
+                  </li>
+                  <li>
+                    <strong>Cross-referenced with network impact</strong> — joins to the same
+                    Meraki + ThousandEyes data as the cards above, so a weather event always
+                    appears next to its ingest-derived network effect.
+                  </li>
+                  <li>
+                    <strong>Privacy-safe</strong> — OpenWeather API key is stored in the
+                    server's encrypted credential vault; the browser only receives the
+                    processed weather payload, never the key.
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <!-- === SECTION: History === -->
+            <section class="section" id="history">
+              <div class="section-title-row">
+                <h2 class="section-title">Historic snapshots</h2>
+                <span class="section-hint">Snapshot count per day · last 30 days</span>
+              </div>
+
+              <div class="card">
+                <div class="toolbar" style="margin: 0 0 10px; padding: 8px 10px">
+                  <span class="chip">Location: Store #1412 — Uptown (Dallas, TX)</span>
+                  <span class="chip">Source: Meraki + ThousandEyes</span>
+                  <span class="chip">Window: 30 d · 2000 points</span>
+                </div>
+
+                <div class="chart-box">
+                  <div class="bar-row">
+                    <!-- 30 bars of varied height -->
+                    <div class="bar" style="height: 60%"></div>
+                    <div class="bar" style="height: 65%"></div>
+                    <div class="bar" style="height: 58%"></div>
+                    <div class="bar" style="height: 70%"></div>
+                    <div class="bar" style="height: 68%"></div>
+                    <div class="bar" style="height: 55%"></div>
+                    <div class="bar" style="height: 62%"></div>
+                    <div class="bar" style="height: 72%"></div>
+                    <div class="bar warn" style="height: 40%"></div>
+                    <div class="bar" style="height: 65%"></div>
+                    <div class="bar" style="height: 73%"></div>
+                    <div class="bar" style="height: 68%"></div>
+                    <div class="bar" style="height: 61%"></div>
+                    <div class="bar" style="height: 76%"></div>
+                    <div class="bar" style="height: 80%"></div>
+                    <div class="bar warn" style="height: 38%"></div>
+                    <div class="bar" style="height: 64%"></div>
+                    <div class="bar" style="height: 60%"></div>
+                    <div class="bar" style="height: 72%"></div>
+                    <div class="bar" style="height: 69%"></div>
+                    <div class="bar" style="height: 74%"></div>
+                    <div class="bar" style="height: 81%"></div>
+                    <div class="bar" style="height: 66%"></div>
+                    <div class="bar" style="height: 58%"></div>
+                    <div class="bar" style="height: 62%"></div>
+                    <div class="bar" style="height: 70%"></div>
+                    <div class="bar danger" style="height: 22%"></div>
+                    <div class="bar" style="height: 68%"></div>
+                    <div class="bar" style="height: 74%"></div>
+                    <div class="bar" style="height: 88%"></div>
+                  </div>
+                </div>
+
+                <p style="color: var(--muted); font-size: 12px; margin: 10px 0 0">
+                  Bar height = snapshot count per day (Meraki or ThousandEyes), up to 30 days
+                  / 2000 points. Amber / red bars mark days where ingest errored or
+                  partially skipped — correlate with <em>Admin → Recent ingest runs</em>.
+                </p>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>Per-location history</strong> — switch sites via the dropdown
+                    (top of the card); backed by the dashboard's 30-day / 2000-point window.
+                  </li>
+                  <li>
+                    <strong>Ingest-failure visibility</strong> — amber / red bars flag days
+                    when ingest errored or was throttled by Meraki / TE rate limits.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                  </li>
+                  <li>
+                    <strong>Retention-bounded</strong> — rows older than the configured
+                    retention window (default 90 days) are removed by the daily purge job.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+
+            <!-- === SECTION: Reporting snapshot === -->
+            <section class="section" id="reporting">
+              <div class="section-title-row">
+                <h2 class="section-title">Reporting snapshot</h2>
+                <span class="section-hint">Last 7 days · full reports under Reporting</span>
+              </div>
+
+              <div class="three-col-kpi">
+                <div class="kpi-mini">
+                  <div class="label">Fleet uptime</div>
+                  <div class="val">99.42 %</div>
+                  <div class="delta up-good">▲ 0.08 pp vs. prior 7 d</div>
+                </div>
+                <div class="kpi-mini">
+                  <div class="label">Incidents (7 d)</div>
+                  <div class="val">27</div>
+                  <div class="delta down-bad">▲ 4 vs. prior 7 d</div>
+                </div>
+                <div class="kpi-mini">
+                  <div class="label">MTTR</div>
+                  <div class="val">38 min</div>
+                  <div class="delta up-good">▼ 6 min vs. prior 7 d</div>
+                </div>
+              </div>
+
+              <div class="two-col">
+                <div class="card">
+                  <h3 style="margin: 0 0 8px; font-size: 14px">Top 5 most-impacted sites</h3>
+                  <table class="table" style="font-size: 12.5px">
+                    <thead>
+                      <tr>
+                        <th>Location</th>
+                        <th>Incidents</th>
+                        <th>Total downtime</th>
+                        <th>Main provider</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>Store #2207 — Tampa</td>
+                        <td>5</td>
+                        <td class="mono">3 h 14 m</td>
+                        <td>Spectrum</td>
+                      </tr>
+                      <tr>
+                        <td>Store #3055 — Portland</td>
+                        <td>4</td>
+                        <td class="mono">2 h 08 m</td>
+                        <td>Comcast Business</td>
+                      </tr>
+                      <tr>
+                        <td>Store #1412 — Dallas</td>
+                        <td>3</td>
+                        <td class="mono">1 h 42 m</td>
+                        <td>AT&amp;T Fiber</td>
+                      </tr>
+                      <tr>
+                        <td>Store #2110 — Miami</td>
+                        <td>3</td>
+                        <td class="mono">1 h 05 m</td>
+                        <td>T-Mobile 5G</td>
+                      </tr>
+                      <tr>
+                        <td>Store #0751 — Minneapolis</td>
+                        <td>2</td>
+                        <td class="mono">47 m</td>
+                        <td>CenturyLink Fiber</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div class="card">
+                  <h3 style="margin: 0 0 8px; font-size: 14px">Incidents by provider (7 d)</h3>
+                  <div class="chart-box" style="height: 190px">
+                    <div class="bar-row" style="gap: 18px; padding: 0 12px">
+                      <div style="display: flex; flex-direction: column; align-items: center; flex: 1">
+                        <div class="bar danger" style="height: 78%; width: 100%"></div>
+                        <div style="margin-top: 6px; font-size: 11px; color: var(--muted)">
+                          Spectrum<br />9
+                        </div>
+                      </div>
+                      <div style="display: flex; flex-direction: column; align-items: center; flex: 1">
+                        <div class="bar warn" style="height: 56%; width: 100%"></div>
+                        <div style="margin-top: 6px; font-size: 11px; color: var(--muted)">
+                          Comcast<br />6
+                        </div>
+                      </div>
+                      <div style="display: flex; flex-direction: column; align-items: center; flex: 1">
+                        <div class="bar" style="height: 44%; width: 100%"></div>
+                        <div style="margin-top: 6px; font-size: 11px; color: var(--muted)">
+                          AT&amp;T<br />4
+                        </div>
+                      </div>
+                      <div style="display: flex; flex-direction: column; align-items: center; flex: 1">
+                        <div class="bar" style="height: 34%; width: 100%"></div>
+                        <div style="margin-top: 6px; font-size: 11px; color: var(--muted)">
+                          Verizon<br />3
+                        </div>
+                      </div>
+                      <div style="display: flex; flex-direction: column; align-items: center; flex: 1">
+                        <div class="bar" style="height: 28%; width: 100%"></div>
+                        <div style="margin-top: 6px; font-size: 11px; color: var(--muted)">
+                          CenturyLink<br />2
+                        </div>
+                      </div>
+                      <div style="display: flex; flex-direction: column; align-items: center; flex: 1">
+                        <div class="bar" style="height: 22%; width: 100%"></div>
+                        <div style="margin-top: 6px; font-size: 11px; color: var(--muted)">
+                          T-Mobile<br />2
+                        </div>
+                      </div>
+                      <div style="display: flex; flex-direction: column; align-items: center; flex: 1">
+                        <div class="bar" style="height: 12%; width: 100%"></div>
+                        <div style="margin-top: 6px; font-size: 11px; color: var(--muted)">
+                          Starlink<br />1
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="feature-callout">
+                <h4>Features available here</h4>
+                <ul>
+                  <li>
+                    <strong>At-a-glance rollups</strong> — uptime %, incident count, and MTTR
+                    with week-over-week deltas. Links through to the full
+                    <em>Reporting</em> page for filter / export.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                    <span class="role-chip user">USER</span>
+                  </li>
+                  <li>
+                    <strong>Top-5 impacted sites</strong> — sorted by total downtime over the
+                    reporting window; click a row to open that site's detail panel.
+                  </li>
+                  <li>
+                    <strong>Incidents by provider</strong> — surfaces circuit providers with
+                    disproportionate failure rates; useful input for vendor QBRs.
+                  </li>
+                  <li>
+                    <strong>CSV export</strong> — full reports export as CSV from the
+                    Reporting page. Every exported cell is escaped against spreadsheet
+                    formula injection.
+                    <span class="role-chip admin">ORG_ADMIN</span>
+                    <span class="role-chip editor">LOCATION_CIRCUIT</span>
+                  </li>
+                </ul>
+              </div>
+            </section>
+          </div>
+        </div>
+      </div>
+
+      <p
+        style="
+          margin-top: 28px;
+          color: var(--muted);
+          font-size: 12px;
+          text-align: center;
+        "
+      >
+        Dashboard overview mockup · Retail Operations Dashboard v1.1.0 · all data fictional.
+      </p>
+    </div>
+
+    <script
+      src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+      integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+      crossorigin=""
+    ></script>
+    <script>
+      (function () {
+        if (typeof L === "undefined") {
+          console.warn("Leaflet failed to load — US map unavailable.");
+          return;
+        }
+
+        // Fictional store locations for the mockup. status: ok | warn | danger.
+        var stores = [
+          { id: "0104", name: "Seattle",       lat: 47.6062, lng: -122.3321, status: "ok"     },
+          { id: "0210", name: "San Francisco", lat: 37.7749, lng: -122.4194, status: "ok"     },
+          { id: "3055", name: "Portland",      lat: 45.5152, lng: -122.6784, status: "warn"   },
+          { id: "0470", name: "Boise",         lat: 43.6150, lng: -116.2023, status: "ok"     },
+          { id: "0522", name: "Denver",        lat: 39.7392, lng: -104.9903, status: "ok"     },
+          { id: "0640", name: "Phoenix",       lat: 33.4484, lng: -112.0740, status: "ok"     },
+          { id: "0751", name: "Minneapolis",   lat: 44.9778,  lng: -93.2650, status: "ok"     },
+          { id: "0833", name: "Kansas City",   lat: 39.0997,  lng: -94.5786, status: "ok"     },
+          { id: "1412", name: "Dallas",        lat: 32.7767,  lng: -96.7970, status: "danger" },
+          { id: "1580", name: "St. Louis",     lat: 38.6270,  lng: -90.1994, status: "ok"     },
+          { id: "1690", name: "Chicago",       lat: 41.8781,  lng: -87.6298, status: "ok"     },
+          { id: "1815", name: "Indianapolis",  lat: 39.7684,  lng: -86.1581, status: "ok"     },
+          { id: "1940", name: "Cleveland",     lat: 41.4993,  lng: -81.6944, status: "ok"     },
+          { id: "2030", name: "Atlanta",       lat: 33.7490,  lng: -84.3880, status: "ok"     },
+          { id: "2110", name: "Miami",         lat: 25.7617,  lng: -80.1918, status: "warn"   },
+          { id: "2207", name: "Tampa",         lat: 27.9506,  lng: -82.4572, status: "danger" },
+          { id: "2390", name: "Washington DC", lat: 38.9072,  lng: -77.0369, status: "ok"     },
+          { id: "2470", name: "New York",      lat: 40.7128,  lng: -74.0060, status: "ok"     },
+          { id: "2560", name: "Boston",        lat: 42.3601,  lng: -71.0589, status: "ok"     }
+        ];
+
+        var statusLabels = { ok: "Healthy", warn: "Degraded", danger: "Failed" };
+
+        var map = L.map("us-map", {
+          zoomControl: true,
+          scrollWheelZoom: false,
+          attributionControl: true,
+        }).setView([39.5, -97.5], 4);
+
+        L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution:
+            '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+          maxZoom: 10,
+          minZoom: 3,
+        }).addTo(map);
+
+        stores.forEach(function (s) {
+          var icon = L.divIcon({
+            className: "",
+            html: '<div class="pin ' + s.status + '" title="Store #' + s.id + " " + s.name + '"></div>',
+            iconSize: [18, 18],
+            iconAnchor: [9, 9],
+          });
+
+          L.marker([s.lat, s.lng], { icon: icon, title: "Store #" + s.id + " " + s.name })
+            .addTo(map)
+            .bindPopup(
+              "<strong>Store #" + s.id + " — " + s.name + "</strong><br/>" +
+              "Status: " + statusLabels[s.status] + "<br/>" +
+              "Lat/lng: " + s.lat.toFixed(4) + ", " + s.lng.toFixed(4)
+            );
+        });
+
+        // Fit continental US nicely on load without letting the user pan too far.
+        map.setMaxBounds([
+          [15, -140],
+          [55, -55],
+        ]);
+      })();
+    </script>
+  </body>
+</html>
