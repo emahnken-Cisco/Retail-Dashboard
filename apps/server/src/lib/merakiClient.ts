@@ -392,10 +392,16 @@ export type MerakiApplianceVlanRow = {
   dhcpHandling?: string;
   /** Meraki's fixed set: "30 minutes" | "1 hour" | "4 hours" | "12 hours" | "1 day" | "1 week". */
   dhcpLeaseTime?: string;
-  /** "upstream_dns" | "google_dns" | "opendns" | "custom" — when "custom", `dnsCustomNameservers` is populated. */
+  /**
+   * Meraki returns one of:
+   *   - A preset name: `"upstream_dns"` | `"google_dns"` | `"opendns"`.
+   *   - The literal IP list (newline-separated) when the operator picked
+   *     "Specify nameservers..." in the dashboard — e.g. `"192.168.88.254\n8.8.8.8"`.
+   *   - Older firmware: `"custom"`, with the IP list in `dnsCustomNameservers`.
+   */
   dnsNameservers?: string;
-  /** Newline-separated when dnsNameservers === "custom"; null/missing otherwise. */
-  dnsCustomNameservers?: string[];
+  /** Legacy field on older firmware — string[] or newline-separated string. */
+  dnsCustomNameservers?: string[] | string;
   fixedIpAssignments?: Record<string, { name?: string; ip: string }>;
   reservedIpRanges?: Array<{ start: string; end: string; comment?: string }>;
   /** DHCP options array — opt 15 (domain-name), 42 (NTP), 43, 66, 119, 121, 150, etc. */

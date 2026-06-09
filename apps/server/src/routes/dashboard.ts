@@ -1066,22 +1066,42 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     return "Run DHCP server";
   }
 
-  /** Resolve DNS server list from Meraki's `dnsNameservers` (preset name) + `dnsCustomNameservers` (list). */
+  /**
+   * Resolve the DNS server list Meraki will hand to DHCP clients on a VLAN.
+   * The API field is overloaded across firmware versions:
+   *   - Known preset keyword (`upstream_dns`, `google_dns`, `opendns`).
+   *   - "custom" + a separate `dnsCustomNameservers` field (legacy).
+   *   - The literal IP list, newline / comma / whitespace-separated (current).
+   * We probe in that order and fall back to "upstream" only when nothing matched.
+   */
   function resolveDhcpDns(vlan: MerakiApplianceVlanRow): string[] {
-    const preset = (vlan.dnsNameservers ?? "").toLowerCase();
-    if (preset === "google_dns" || preset === "google") {
+    const raw = (vlan.dnsNameservers ?? "").trim();
+    const presetKey = raw.toLowerCase();
+
+    if (presetKey === "google_dns" || presetKey === "google") {
       return ["8.8.8.8", "8.8.4.4"];
     }
-    if (preset === "opendns") {
+    if (presetKey === "opendns") {
       return ["208.67.222.222", "208.67.220.220"];
     }
-    if (preset === "custom") {
-      const list = Array.isArray(vlan.dnsCustomNameservers)
-        ? vlan.dnsCustomNameservers.map((s) => String(s).trim()).filter(Boolean)
-        : [];
+    if (presetKey === "upstream_dns" || presetKey === "upstream" || presetKey === "") {
+      return ["upstream"];
+    }
+
+    // Legacy shape: dnsNameservers === "custom" + dnsCustomNameservers list.
+    if (presetKey === "custom") {
+      const cn = vlan.dnsCustomNameservers;
+      const arr = Array.isArray(cn) ? cn : typeof cn === "string" ? cn.split(/[\s,]+/) : [];
+      const list = arr.map((s) => String(s).trim()).filter(Boolean);
       return list.length > 0 ? list : ["—"];
     }
-    return ["upstream"];
+
+    // Current shape: dnsNameservers IS the literal IP list (one per line, or comma-separated).
+    const ips = raw
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return ips.length > 0 ? ips : ["upstream"];
   }
 
   /** Map a DHCP option code to its well-known short name for the UI pill. */
