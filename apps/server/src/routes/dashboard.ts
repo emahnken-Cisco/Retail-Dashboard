@@ -1464,15 +1464,33 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
               : ({} as Awaited<ReturnType<typeof getDeviceWirelessConnectionStats>>);
           const counts = clientRes.status === "fulfilled" ? clientRes.value : [];
 
-          // Discover which bands this AP has configured; query channel-util only for those.
+          // Decide which bands to query channel-util for.
+          //
+          // Heuristic: always include 2.4 + 5 GHz — every modern MR (MR3x and up)
+          // supports both, so the upstream call is safe. Only include 6 GHz when
+          // we have positive evidence (radio settings hint OR model suggests
+          // Wi-Fi 6E/7), because asking for 6 GHz on a non-6E radio returns 400.
+          //
+          // The previous heuristic ("query only bands radio-settings reported
+          // non-null for") broke for APs governed by an RF profile, where the
+          // per-device radio-settings endpoint returns null for every channel /
+          // power / width even though the AP is actively radiating. Result: no
+          // channel-util calls were made and the sidecar rendered empty bands.
+          const SIX_GHZ_MODELS = /^(MR|CW)(57|78|86|87)/i;
+          const supportsSixGhz =
+            SIX_GHZ_MODELS.test(dev.model) ||
+            (() => {
+              const rs6 = bandFromRadioSettings(radio, "6 GHz");
+              return rs6.channel != null || rs6.channelWidthMhz != null || rs6.txPowerDbm != null;
+            })();
+
           const configuredBands: Array<{ band: WirelessBand; rs: ReturnType<typeof bandFromRadioSettings> }> = [];
           for (const band of ALL_BANDS) {
-            const rs = bandFromRadioSettings(radio, band);
-            // Only query for bands that look configured. We still surface the band entry
-            // if the radio settings call failed entirely (rs.channel == null on all 3).
-            if (rs.channel != null || rs.channelWidthMhz != null || rs.txPowerDbm != null) {
-              configuredBands.push({ band, rs });
+            if (band === "6 GHz" && !supportsSixGhz) {
+              continue;
             }
+            const rs = bandFromRadioSettings(radio, band);
+            configuredBands.push({ band, rs });
           }
 
           // Fan out channel-util per (AP × configured band).

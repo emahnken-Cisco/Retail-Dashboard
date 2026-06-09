@@ -11,7 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "../api.js";
 import { SidecarFrame } from "./CircuitSidecars.js";
-import { ToneDot, toneForFraction, type GaugeTone } from "./SemiGauge.js";
+import { SemiGauge, ToneDot, toneForFraction, type GaugeTone } from "./SemiGauge.js";
 
 export type WirelessApBand = {
   band: "2.4 GHz" | "5 GHz" | "6 GHz";
@@ -141,38 +141,9 @@ const sectionHeader: CSSProperties = {
   margin: "0 0 0.4rem",
 };
 
-function HealthPill({ tone, label }: { tone: GaugeTone; label: string }) {
-  const color =
-    tone === "ok" ? "var(--ok)" :
-    tone === "warn" ? "var(--warn)" :
-    tone === "danger" ? "var(--danger)" :
-    "var(--muted)";
-  return (
-    <span
-      style={{
-        display: "inline-flex",
-        alignItems: "center",
-        gap: 6,
-        padding: "2px 8px",
-        background: "var(--surface2)",
-        borderRadius: 999,
-        fontSize: "0.72rem",
-        color: "var(--text)",
-        whiteSpace: "nowrap",
-      }}
-    >
-      <ToneDot tone={tone} />
-      <span style={{ color }}>{label}</span>
-    </span>
-  );
-}
-
 function ChannelRow({ ch }: { ch: WirelessChannel }) {
-  const airtime = ch.avgAirtimePct ?? 0;
-  const nonWifi = ch.avgNonWifiPct ?? 0;
-  const wifi = Math.max(0, airtime - nonWifi);
   const airtimeTone = toneForFraction(ch.avgAirtimePct != null ? ch.avgAirtimePct / 100 : null);
-
+  const noiseTone = toneForNonWifi(ch.avgNonWifiPct);
   return (
     <div
       className="card"
@@ -181,66 +152,81 @@ function ChannelRow({ ch }: { ch: WirelessChannel }) {
         display: "flex",
         alignItems: "center",
         gap: "0.85rem",
+        flexWrap: "wrap",
       }}
     >
-      <div style={{ flex: "1 1 auto", minWidth: 0 }}>
+      <div style={{ flex: "1 1 160px", minWidth: 140 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
           <ToneDot tone={airtimeTone} />
           <strong style={{ fontSize: "0.88rem" }}>
             {ch.band} · ch {ch.channel}
           </strong>
-          <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
-            {ch.apsOnChannel} AP{ch.apsOnChannel === 1 ? "" : "s"}
-          </span>
         </div>
-        <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 2 }}>
-          avg airtime{" "}
-          <span style={{ color: "var(--text)", fontWeight: 600 }}>
-            {ch.avgAirtimePct != null ? `${ch.avgAirtimePct.toFixed(1)}%` : "—"}
-          </span>{" "}
-          · Wi-Fi {wifi.toFixed(1)}% / noise{" "}
-          <span style={{ color: toneForNonWifi(ch.avgNonWifiPct) === "danger" ? "var(--danger)" : "var(--text)" }}>
-            {nonWifi.toFixed(1)}%
-          </span>
+        <div style={{ fontSize: "0.72rem", color: "var(--muted)", marginTop: 2 }}>
+          {ch.apsOnChannel} AP{ch.apsOnChannel === 1 ? "" : "s"} on channel
         </div>
+      </div>
+      <div style={{ display: "flex", gap: 14, flex: "0 0 auto" }}>
+        <SemiGauge
+          value={ch.avgAirtimePct}
+          max={100}
+          label="Airtime"
+          suffix="%"
+          tone={airtimeTone}
+          size={86}
+        />
+        <SemiGauge
+          value={ch.avgNonWifiPct}
+          max={100}
+          label="Noise"
+          suffix="%"
+          tone={noiseTone}
+          size={86}
+        />
       </div>
     </div>
   );
 }
 
 function ApBandRow({ b }: { b: WirelessApBand }) {
-  const wifi = Math.max(0, (b.airtimePct ?? 0) - (b.nonWifiPct ?? 0));
   const airtimeTone = toneForFraction(b.airtimePct != null ? b.airtimePct / 100 : null);
+  const noiseTone = toneForNonWifi(b.nonWifiPct);
   return (
     <div
       style={{
         display: "flex",
         alignItems: "center",
-        gap: "0.65rem",
-        padding: "0.4rem 0",
+        gap: "0.85rem",
+        padding: "0.5rem 0",
         borderTop: "1px solid var(--surface2)",
+        flexWrap: "wrap",
       }}
     >
-      <div style={{ flex: "0 0 60px", fontSize: "0.78rem", fontWeight: 600 }}>{b.band}</div>
-      <div style={{ flex: "0 0 70px", fontSize: "0.78rem", color: "var(--muted)" }}>
-        ch {b.channel ?? "—"}
-        {b.channelWidthMhz ? ` / ${b.channelWidthMhz}` : ""}
+      <div style={{ flex: "1 1 140px", minWidth: 130 }}>
+        <div style={{ fontSize: "0.82rem", fontWeight: 600 }}>{b.band}</div>
+        <div style={{ fontSize: "0.7rem", color: "var(--muted)", marginTop: 2 }}>
+          ch {b.channel ?? "—"}
+          {b.channelWidthMhz ? ` · ${b.channelWidthMhz} MHz` : ""}
+          {" · "}TX {b.txPowerDbm != null ? `${b.txPowerDbm} dBm` : "—"}
+        </div>
       </div>
-      <div style={{ flex: "1 1 auto", display: "flex", alignItems: "center", gap: 8, minWidth: 0 }}>
-        <ToneDot tone={airtimeTone} />
-        <span style={{ fontSize: "0.78rem", color: "var(--text)" }}>
-          {b.airtimePct != null ? `${b.airtimePct.toFixed(0)}%` : "—"}
-        </span>
-        <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
-          (Wi-Fi {wifi.toFixed(0)}% / noise{" "}
-          <span style={{ color: toneForNonWifi(b.nonWifiPct) === "danger" ? "var(--danger)" : "var(--muted)" }}>
-            {(b.nonWifiPct ?? 0).toFixed(0)}%
-          </span>
-          )
-        </span>
-      </div>
-      <div style={{ flex: "0 0 70px", fontSize: "0.72rem", color: "var(--muted)", textAlign: "right" }}>
-        TX {b.txPowerDbm != null ? `${b.txPowerDbm} dBm` : "—"}
+      <div style={{ display: "flex", gap: 12, flex: "0 0 auto" }}>
+        <SemiGauge
+          value={b.airtimePct}
+          max={100}
+          label="Airtime"
+          suffix="%"
+          tone={airtimeTone}
+          size={80}
+        />
+        <SemiGauge
+          value={b.nonWifiPct}
+          max={100}
+          label="Noise"
+          suffix="%"
+          tone={noiseTone}
+          size={80}
+        />
       </div>
     </div>
   );
@@ -250,6 +236,13 @@ function ApCard({ ap }: { ap: WirelessAp }) {
   const clientFraction = ap.clientCapacity > 0 ? ap.clientCount / ap.clientCapacity : null;
   const clientTone = toneForFraction(clientFraction);
   const rssiTone = toneForRssi(ap.avgClientRssiDbm);
+  // RSSI gauge mapping: -90 dBm (worst, 100% of "badness") → -30 dBm (best, 0%).
+  // Render as a gauge filled by how *bad* RSSI is; tone still encoded via toneForRssi.
+  const rssiDisplay = ap.avgClientRssiDbm != null ? `${ap.avgClientRssiDbm}` : "n/a";
+  const rssiBadnessPct =
+    ap.avgClientRssiDbm != null
+      ? Math.max(0, Math.min(100, ((-30 - ap.avgClientRssiDbm) / 60) * 100))
+      : null;
 
   return (
     <div className="card" style={{ padding: "0.85rem", display: "flex", flexDirection: "column", gap: "0.6rem" }}>
@@ -258,24 +251,31 @@ function ApCard({ ap }: { ap: WirelessAp }) {
           display: "flex",
           alignItems: "flex-start",
           justifyContent: "space-between",
-          gap: 8,
+          gap: 12,
           flexWrap: "wrap",
         }}
       >
-        <div style={{ minWidth: 0 }}>
+        <div style={{ minWidth: 0, flex: "1 1 160px" }}>
           <h3 style={{ margin: 0, fontSize: "0.95rem" }}>{ap.name}</h3>
           <p style={{ margin: "2px 0 0", fontSize: "0.72rem", color: "var(--muted)" }}>
             {ap.model} · {ap.serial}
           </p>
         </div>
-        <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-          <HealthPill
+        <div style={{ display: "flex", gap: 12, flex: "0 0 auto" }}>
+          <SemiGauge
+            value={ap.clientCount}
+            max={ap.clientCapacity > 0 ? ap.clientCapacity : 1}
+            label={`Clients / ${ap.clientCapacity}`}
             tone={clientTone}
-            label={`${ap.clientCount} / ${ap.clientCapacity} clients`}
+            size={92}
           />
-          <HealthPill
+          <SemiGauge
+            value={rssiBadnessPct}
+            max={100}
+            label="RSSI (dBm)"
+            display={rssiDisplay}
             tone={rssiTone}
-            label={`avg RSSI ${ap.avgClientRssiDbm != null ? `${ap.avgClientRssiDbm} dBm` : "n/a"}`}
+            size={92}
           />
         </div>
       </div>
