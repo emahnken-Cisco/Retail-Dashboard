@@ -245,3 +245,26 @@ model OpenWeatherUsageDay {
   dayUtc    String @id
   callCount Int    @default(0)
 }
+
+/**
+ * "Healthy design" client capacity per Meraki AP model, used by the wireless
+ * health sidecar to flag overloaded APs. This is *not* the radio's theoretical
+ * max — it's the ceiling above which performance typically degrades in real
+ * deployments, configurable by ORG_ADMIN.
+ *
+ * `updatedById` / `updatedByEmail` are plain strings (no FK) so the table
+ * remains self-contained when a user record is later deleted.
+ */
+model MerakiModelClientCapacity {
+  /** Meraki model name as PK, e.g. "MR36", "MR46", "CW9166I". */
+  model           String   @id
+  /** Configured healthy-design capacity (associated clients per AP). */
+  capacity        Int
+  /** Optional operator note explaining the chosen number. */
+  note            String?
+  /** User id (cuid) of the last editor, or null when seeded by migration. */
+  updatedById     String?
+  /** Denormalized email for instant display in the admin table. */
+  updatedByEmail  String?
+  updatedAt       DateTime @updatedAt
+}

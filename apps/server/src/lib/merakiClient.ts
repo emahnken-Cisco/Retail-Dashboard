@@ -353,3 +353,209 @@ export async function getDeviceLossAndLatencyHistory(
     `/devices/${enc}/lossAndLatencyHistory?${qs.toString()}`,
   );
 }
+
+// ===========================================================================
+// DHCP + Wireless health helpers (see DhcpHealthSidecar / WirelessHealthSidecar)
+// ===========================================================================
+
+/** Row from `GET /devices/{serial}/appliance/dhcp/subnets` — per-VLAN scope usage on an MX/Z appliance. */
+export type MerakiApplianceDhcpSubnetRow = {
+  subnet: string;
+  vlanId: number;
+  usedCount: number;
+  freeCount: number;
+};
+
+/**
+ * Per-appliance DHCP subnet usage (clients per VLAN). Empty array on a 204.
+ * Requires **dashboard:general:telemetry:read** on the API key.
+ */
+export async function getApplianceDhcpSubnets(
+  apiKey: string,
+  serial: string,
+): Promise<MerakiApplianceDhcpSubnetRow[]> {
+  const enc = encodeURIComponent(serial);
+  return merakiFetch<MerakiApplianceDhcpSubnetRow[]>(apiKey, `/devices/${enc}/appliance/dhcp/subnets`);
+}
+
+/**
+ * Row from `GET /networks/{networkId}/appliance/vlans` — full VLAN config including DHCP options.
+ * Only the fields the dashboard surfaces are typed; the Meraki response carries additional
+ * fields (ipv6, group policy, etc.) that we deliberately ignore for v1.
+ */
+export type MerakiApplianceVlanRow = {
+  id: number;
+  name: string;
+  subnet: string;
+  applianceIp: string;
+  /** "Run a DHCP server" | "Relay DHCP to another server" | "Do not respond to DHCP requests". */
+  dhcpHandling?: string;
+  /** Meraki's fixed set: "30 minutes" | "1 hour" | "4 hours" | "12 hours" | "1 day" | "1 week". */
+  dhcpLeaseTime?: string;
+  /** "upstream_dns" | "google_dns" | "opendns" | "custom" — when "custom", `dnsCustomNameservers` is populated. */
+  dnsNameservers?: string;
+  /** Newline-separated when dnsNameservers === "custom"; null/missing otherwise. */
+  dnsCustomNameservers?: string[];
+  fixedIpAssignments?: Record<string, { name?: string; ip: string }>;
+  reservedIpRanges?: Array<{ start: string; end: string; comment?: string }>;
+  /** DHCP options array — opt 15 (domain-name), 42 (NTP), 43, 66, 119, 121, 150, etc. */
+  dhcpOptions?: Array<{ code: string; type: string; value: string }>;
+  mandatoryDhcp?: { enabled: boolean };
+};
+
+/** Full VLAN config list for an MX/Z network (one call returns every VLAN). */
+export async function getNetworkApplianceVlans(
+  apiKey: string,
+  networkId: string,
+): Promise<MerakiApplianceVlanRow[]> {
+  return merakiFetch<MerakiApplianceVlanRow[]>(
+    apiKey,
+    `/networks/${encodeURIComponent(networkId)}/appliance/vlans`,
+  );
+}
+
+/**
+ * Row from `GET /networks/{networkId}/wireless/channelUtilizationHistory` —
+ * per-AP, per-band, time-bucketed airtime utilization.
+ */
+export type MerakiNetworkChannelUtilizationRow = {
+  startTs: string;
+  endTs: string;
+  /** Meraki radio names: `wifi0` = 2.4 GHz, `wifi1` = 5 GHz, `wifi2` = 6 GHz (when present). */
+  wifi0?: { utilization: number; utilization80211: number; utilizationNon80211: number } | null;
+  wifi1?: { utilization: number; utilization80211: number; utilizationNon80211: number } | null;
+  wifi2?: { utilization: number; utilization80211: number; utilizationNon80211: number } | null;
+};
+
+/**
+ * Channel utilization history for a *specific access point* in the network, per band.
+ * The Meraki endpoint requires one of `deviceSerial` / `clientId` / `apTag`; we always pass deviceSerial.
+ * Requires **dashboard:general:telemetry:read**.
+ */
+export async function getNetworkChannelUtilizationHistory(
+  apiKey: string,
+  networkId: string,
+  opts: { timespan: number; resolution: number; deviceSerial: string },
+): Promise<MerakiNetworkChannelUtilizationRow[]> {
+  const qs = new URLSearchParams();
+  qs.set("timespan", String(opts.timespan));
+  qs.set("resolution", String(opts.resolution));
+  qs.set("deviceSerial", opts.deviceSerial);
+  return merakiFetch<MerakiNetworkChannelUtilizationRow[]>(
+    apiKey,
+    `/networks/${encodeURIComponent(networkId)}/wireless/channelUtilizationHistory?${qs.toString()}`,
+  );
+}
+
+/** Row from `GET /networks/{networkId}/wireless/usageHistory` — bytes per interval, optionally scoped by SSID. */
+export type MerakiNetworkWirelessUsageRow = {
+  startTs: string;
+  endTs: string;
+  totalKbps?: number | null;
+  sentKbps?: number | null;
+  receivedKbps?: number | null;
+};
+
+export async function getNetworkWirelessUsageHistory(
+  apiKey: string,
+  networkId: string,
+  opts: { timespan: number; resolution: number; ssid?: number; deviceSerial?: string },
+): Promise<MerakiNetworkWirelessUsageRow[]> {
+  const qs = new URLSearchParams();
+  qs.set("timespan", String(opts.timespan));
+  qs.set("resolution", String(opts.resolution));
+  if (opts.ssid != null) {
+    qs.set("ssid", String(opts.ssid));
+  }
+  if (opts.deviceSerial) {
+    qs.set("deviceSerial", opts.deviceSerial);
+  }
+  return merakiFetch<MerakiNetworkWirelessUsageRow[]>(
+    apiKey,
+    `/networks/${encodeURIComponent(networkId)}/wireless/usageHistory?${qs.toString()}`,
+  );
+}
+
+/** Row from `GET /networks/{networkId}/wireless/clientCountHistory` — associated clients per interval. */
+export type MerakiNetworkWirelessClientCountRow = {
+  startTs: string;
+  endTs: string;
+  clientCount: number | null;
+};
+
+export async function getNetworkWirelessClientCountHistory(
+  apiKey: string,
+  networkId: string,
+  opts: { timespan: number; resolution: number; ssid?: number; deviceSerial?: string },
+): Promise<MerakiNetworkWirelessClientCountRow[]> {
+  const qs = new URLSearchParams();
+  qs.set("timespan", String(opts.timespan));
+  qs.set("resolution", String(opts.resolution));
+  if (opts.ssid != null) {
+    qs.set("ssid", String(opts.ssid));
+  }
+  if (opts.deviceSerial) {
+    qs.set("deviceSerial", opts.deviceSerial);
+  }
+  return merakiFetch<MerakiNetworkWirelessClientCountRow[]>(
+    apiKey,
+    `/networks/${encodeURIComponent(networkId)}/wireless/clientCountHistory?${qs.toString()}`,
+  );
+}
+
+/**
+ * Row from `GET /devices/{serial}/wireless/radio/settings` — per-band radio
+ * configuration (channel, channel width, TX power) for an MR / CW access point.
+ */
+export type MerakiDeviceWirelessRadioSettings = {
+  serial: string;
+  /** Per-band radio config. Meraki sometimes returns an alternate shape with `rfProfileId` only — fields below may be null. */
+  twoFourGhzSettings?: { channel: number | null; channelWidth: number | null; targetPower: number | null } | null;
+  fiveGhzSettings?: { channel: number | null; channelWidth: number | null; targetPower: number | null } | null;
+  sixGhzSettings?: { channel: number | null; channelWidth: number | null; targetPower: number | null } | null;
+};
+
+export async function getDeviceWirelessRadioSettings(
+  apiKey: string,
+  serial: string,
+): Promise<MerakiDeviceWirelessRadioSettings> {
+  const enc = encodeURIComponent(serial);
+  return merakiFetch<MerakiDeviceWirelessRadioSettings>(
+    apiKey,
+    `/devices/${enc}/wireless/radio/settings`,
+  );
+}
+
+/**
+ * Row from `GET /devices/{serial}/wireless/connectionStats` — aggregated client
+ * connection quality stats for a single AP across the requested timespan.
+ * Includes the average client RSSI as seen by the AP (uplink signal strength).
+ */
+export type MerakiDeviceWirelessConnectionStats = {
+  serial?: string;
+  connectionStats?: {
+    assoc?: number;
+    auth?: number;
+    dhcp?: number;
+    dns?: number;
+    success?: number;
+  };
+  /** Some firmware versions surface a `signalQuality` block with avg RSSI / SNR. */
+  signalQuality?: { avgRssi?: number | null; avgSnr?: number | null } | null;
+  /** Newer responses include per-band aggregates; treated as optional. */
+  byBand?: Array<{ band: string; avgRssi?: number | null; avgSnr?: number | null }>;
+};
+
+export async function getDeviceWirelessConnectionStats(
+  apiKey: string,
+  serial: string,
+  opts: { timespan: number },
+): Promise<MerakiDeviceWirelessConnectionStats> {
+  const enc = encodeURIComponent(serial);
+  const qs = new URLSearchParams();
+  qs.set("timespan", String(opts.timespan));
+  return merakiFetch<MerakiDeviceWirelessConnectionStats>(
+    apiKey,
+    `/devices/${enc}/wireless/connectionStats?${qs.toString()}`,
+  );
+}

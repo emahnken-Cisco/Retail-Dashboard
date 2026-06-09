@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getOpenWeatherQuotaSnapshot } from "../lib/openWeatherQuota.js";
 import { getAdminSettings } from "../lib/settings.js";
+import { requireAuth } from "./auth.js";
 import { requireOrgAdmin } from "../lib/rbac.js";
 import { runMerakiIngest } from "../jobs/merakiIngest.js";
 import { runThousandEyesIngest } from "../jobs/thousandEyesIngest.js";
@@ -188,6 +189,107 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           startedAt: r.startedAt.toISOString(),
           finishedAt: r.finishedAt?.toISOString() ?? null,
         })),
+      };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Wireless AP "healthy design" client capacity, per Meraki model.
+  // Read: any authenticated user (the wireless health route needs it too).
+  // Write: ORG_ADMIN only; capacity change is recorded as a structured log
+  // entry (the repo has no audit-log model — this is the agreed v1 trail).
+  // -------------------------------------------------------------------------
+
+  app.get(
+    "/api/admin/wireless/model-capacity",
+    { preHandler: requireAuth },
+    async () => {
+      const rows = await prisma.merakiModelClientCapacity.findMany({
+        orderBy: { model: "asc" },
+      });
+      return {
+        models: rows.map((r) => ({
+          model: r.model,
+          capacity: r.capacity,
+          note: r.note,
+          updatedById: r.updatedById,
+          updatedByEmail: r.updatedByEmail,
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+      };
+    },
+  );
+
+  const modelCapacityUpdateSchema = z.object({
+    capacity: z.number().int().min(1).max(2000),
+    note: z.string().max(280).nullable().optional(),
+  });
+
+  app.put(
+    "/api/admin/wireless/model-capacity/:model",
+    { preHandler: requireOrgAdmin },
+    async (req, reply) => {
+      const { model: rawModel } = req.params as { model: string };
+      const model = rawModel?.trim().toUpperCase() ?? "";
+      // Allow letters, digits, and dash so future Catalyst SKUs (e.g. CW9176D1) work.
+      // Reject anything else so an attacker can't smuggle a path traversal as the PK.
+      if (!model || !/^[A-Z0-9-]{2,32}$/.test(model)) {
+        return reply.code(400).send({ error: "Invalid model name" });
+      }
+
+      const parsed = modelCapacityUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "Invalid body", details: parsed.error.flatten() });
+      }
+
+      const userId = req.session?.userId as string | undefined;
+      if (!userId) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+      const editor = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (!editor) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+
+      const note = parsed.data.note === undefined ? undefined : parsed.data.note;
+      const row = await prisma.merakiModelClientCapacity.upsert({
+        where: { model },
+        update: {
+          capacity: parsed.data.capacity,
+          ...(note !== undefined ? { note } : {}),
+          updatedById: userId,
+          updatedByEmail: editor.email,
+        },
+        create: {
+          model,
+          capacity: parsed.data.capacity,
+          note: note ?? null,
+          updatedById: userId,
+          updatedByEmail: editor.email,
+        },
+      });
+
+      req.log.info(
+        {
+          audit: "wireless.modelCapacity.updated",
+          model: row.model,
+          capacity: row.capacity,
+          updatedById: row.updatedById,
+          updatedByEmail: row.updatedByEmail,
+        },
+        "wireless model client capacity updated",
+      );
+
+      return {
+        model: row.model,
+        capacity: row.capacity,
+        note: row.note,
+        updatedById: row.updatedById,
+        updatedByEmail: row.updatedByEmail,
+        updatedAt: row.updatedAt.toISOString(),
       };
     },
   );

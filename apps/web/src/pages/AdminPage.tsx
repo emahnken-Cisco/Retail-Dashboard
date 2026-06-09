@@ -122,6 +122,10 @@ export function AdminPage() {
       <p style={{ fontSize: "0.9rem", marginTop: "0.35rem" }}>
         <Link to="/admin/users">User admin</Link> — create users and assign roles (organization admins only).
       </p>
+      <p style={{ fontSize: "0.9rem", marginTop: "0.35rem" }}>
+        <Link to="/admin/wireless-capacity">Wireless capacity</Link> — tune the "healthy design" client capacity
+        per Meraki AP model (drives the warning tone in the wireless health sidecar).
+      </p>
       {taskMsg ? <p style={{ color: "var(--accent)" }}>{taskMsg}</p> : null}
 
       <section className="card" style={{ marginTop: "1rem" }}>

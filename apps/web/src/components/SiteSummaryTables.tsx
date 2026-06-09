@@ -27,6 +27,8 @@ import { MerakiCameraSidecar } from "./MerakiCameraSidecar.js";
 import { MerakiEquipmentAlertsSidecar } from "./MerakiEquipmentAlertsSidecar.js";
 import { LocationCircuitsSidecar, WanCircuitClickSidecar } from "./CircuitSidecars.js";
 import { UplinkHistorySidecar } from "./UplinkHistorySidecar.js";
+import { DhcpHealthSidecar } from "./DhcpHealthSidecar.js";
+import { WirelessHealthSidecar } from "./WirelessHealthSidecar.js";
 import { api } from "../api.js";
 import { openWeatherIconTooltip } from "../lib/siteWeatherDisplay.js";
 import { WeatherGlyph } from "./WeatherGlyph.js";
@@ -676,6 +678,8 @@ export function SiteDetailPanel({
     status: string | null;
   } | null>(null);
   const [circuitsSidecarOpen, setCircuitsSidecarOpen] = useState(false);
+  const [dhcpHealthOpen, setDhcpHealthOpen] = useState<boolean>(false);
+  const [wirelessHealthOpen, setWirelessHealthOpen] = useState<boolean>(false);
   const [showSiteWeather, setShowSiteWeather] = useState(false);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherErr, setWeatherErr] = useState<string | null>(null);
@@ -701,6 +705,8 @@ export function SiteDetailPanel({
     setWanCircuitSidecar(null);
     setUplinkHistory(null);
     setCircuitsSidecarOpen(false);
+    setDhcpHealthOpen(false);
+    setWirelessHealthOpen(false);
   }, [siteId, locationName]);
   useEffect(() => {
     setShowSiteWeather(false);
@@ -1016,6 +1022,59 @@ export function SiteDetailPanel({
           ) : (
             <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--muted)" }}>No Meraki snapshot.</p>
           )}
+          {meraki ? (
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                marginTop: 2,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setDhcpHealthOpen(true)}
+                title="Per-VLAN DHCP scope usage and options"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  background: "var(--surface2)",
+                  color: "var(--text)",
+                  border: "1px solid transparent",
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ color: "var(--accent)" }}>DHCP</span>
+                <span style={{ color: "var(--muted)", fontWeight: 500 }}>scope health</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setWirelessHealthOpen(true)}
+                title="Per-AP, per-channel, and per-SSID wireless health"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  background: "var(--surface2)",
+                  color: "var(--text)",
+                  border: "1px solid transparent",
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ color: "var(--accent)" }}>Wireless</span>
+                <span style={{ color: "var(--muted)", fontWeight: 500 }}>health</span>
+              </button>
+            </div>
+          ) : null}
         </div>
         <MiniTable title="ThousandEyes agents at site" empty={agents.length === 0} maxBodyHeight={panelMaxHeight}>
           {agents.length > 0 ? <AgentsTableBody rows={agents} /> : null}
@@ -1205,6 +1264,18 @@ export function SiteDetailPanel({
         networkAlerts={meraki?.alerts ?? []}
         alertsNote={meraki?.alertsNote}
         snapshotCapturedAt={merakiCapturedAt}
+      />
+      <DhcpHealthSidecar
+        open={dhcpHealthOpen}
+        onClose={() => setDhcpHealthOpen(false)}
+        siteId={siteId}
+        locationName={locationName}
+      />
+      <WirelessHealthSidecar
+        open={wirelessHealthOpen}
+        onClose={() => setWirelessHealthOpen(false)}
+        siteId={siteId}
+        locationName={locationName}
       />
       <UplinkHistorySidecar
         open={uplinkHistory != null}

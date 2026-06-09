@@ -61,6 +61,7 @@ export function Layout() {
             <NavLink to="/admin">Settings</NavLink>
             {canViewUserAdmin(role) ? <NavLink to="/admin/users">User admin</NavLink> : null}
             {canViewApiKeys(role) ? <NavLink to="/admin/credentials">API keys</NavLink> : null}
+            <NavLink to="/admin/wireless-capacity">Wireless capacity</NavLink>
           </>
         ) : null}
         {canViewApiDebug(role) ? <NavLink to="/debug">API debug</NavLink> : null}
