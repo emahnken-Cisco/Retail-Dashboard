@@ -677,7 +677,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     if (!isPayloadRecord(payload)) {
       return m;
     }
-    for (const key of ["httpTests", "agentToServerTests"] as const) {
+    for (const key of ["httpTests", "agentToServerTests", "agentToAgentTests"] as const) {
       const arr = payload[key];
       if (!Array.isArray(arr)) {
         continue;
@@ -911,8 +911,9 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * ThousandEyes enterprise test time series (latency / loss) for tests that appear in the site’s latest TE ingest
-   * snapshot (HTTP + agent-to-server). Uses live TE API (`GET /v7/test-results/{testId}/…`), with a short in-memory
-   * TTL cache to limit repeated pagination calls.
+   * snapshot (HTTP, agent-to-server, agent-to-agent). Uses live TE API (`GET /v7/test-results/{testId}/…`), with a
+   * short in-memory TTL cache to limit repeated pagination calls. Test type drives the resource segment
+   * (`http-server`, `page-load`, `api`, or `network` for agent-to-server / agent-to-agent).
    */
   app.get(
     "/api/dashboard/sites/:siteId/thousandeyes-enterprise-test-metrics",
@@ -983,4 +984,5 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       }
     },
   );
+
 }

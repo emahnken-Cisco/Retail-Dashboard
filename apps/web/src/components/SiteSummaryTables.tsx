@@ -19,6 +19,7 @@ import {
   isMerakiCameraModel,
   isMerakiMrOrMs,
   normalizeMerakiUplinkParam,
+  teAgentToAgentTestsForSelection,
   teAgentToServerTestsForSelection,
   teTestsForAgentSelection,
 } from "../lib/sitePayloads.js";
@@ -752,14 +753,16 @@ export function SiteDetailPanel({
 
   const tests = teTestsForAgentSelection(te, teAgentScope);
   const agentToServerTests = teAgentToServerTestsForSelection(te, teAgentScope);
-  const uplinkTeEnterpriseTests = useMemo(() => {
+  const agentToAgentTests = teAgentToAgentTestsForSelection(te, teAgentScope);
+  const uplinkTeEnterpriseTests = useMemo<TETestRow[]>(() => {
     if (!te) {
       return [] as TETestRow[];
     }
     const a = teTestsForAgentSelection(te, teAgentScope);
     const b = teAgentToServerTestsForSelection(te, teAgentScope);
+    const c = teAgentToAgentTestsForSelection(te, teAgentScope);
     const m = new Map<string, TETestRow>();
-    for (const t of [...a, ...b]) {
+    for (const t of [...a, ...b, ...c]) {
       if (t.testId && t.testId !== "—") {
         m.set(t.testId, t);
       }
@@ -1144,6 +1147,13 @@ export function SiteDetailPanel({
           >
             {agentToServerTests.length > 0 ? <TestsTableBody rows={agentToServerTests} /> : null}
           </MiniTable>
+          <MiniTable
+            title="Agent-to-agent tests (enterprise agent)"
+            empty={agentToAgentTests.length === 0}
+            maxBodyHeight={panelMaxHeight}
+          >
+            {agentToAgentTests.length > 0 ? <TestsTableBody rows={agentToAgentTests} /> : null}
+          </MiniTable>
         </div>
         <MiniTable
           title="Equipment (MR / MS / MX / CW / MV)"
@@ -1163,8 +1173,8 @@ export function SiteDetailPanel({
       <p style={{ margin: "0.75rem 0 0", fontSize: "0.72rem", color: "var(--muted)" }}>
         Equipment status comes from Meraki <code>GET /organizations/…/devices/availabilities</code> (online / offline /
         alerting / dormant), merged by serial. HTTP tests are types whose name includes &quot;http&quot;; agent-to-server
-        tests are listed separately. Source: ThousandEyes <code>GET /agents?expand=test</code>. Use the dropdown when
-        several agents match the location TE tag.
+        and agent-to-agent tests are listed separately. Source: ThousandEyes
+        <code>GET /agents?expand=test</code>. Use the dropdown when several agents match the location TE tag.
       </p>
 
       {showEndpointAgents && te ? (
@@ -1343,16 +1353,19 @@ export function LocationCardSummary({
   }, [siteId, locationName]);
   const tests = teTestsForAgentSelection(te, teAgentScope);
   const agentToServerTests = teAgentToServerTestsForSelection(te, teAgentScope);
+  const agentToAgentTests = teAgentToAgentTestsForSelection(te, teAgentScope);
   const enabledTests = tests.filter((t) => t.enabled).length;
   const enabledA2s = agentToServerTests.filter((t) => t.enabled).length;
-  const uplinkTeEnterpriseTests = useMemo(() => {
+  const enabledA2a = agentToAgentTests.filter((t) => t.enabled).length;
+  const uplinkTeEnterpriseTests = useMemo<TETestRow[]>(() => {
     if (!te) {
       return [] as TETestRow[];
     }
     const a = teTestsForAgentSelection(te, teAgentScope);
     const b = teAgentToServerTestsForSelection(te, teAgentScope);
+    const c = teAgentToAgentTestsForSelection(te, teAgentScope);
     const m = new Map<string, TETestRow>();
-    for (const t of [...a, ...b]) {
+    for (const t of [...a, ...b, ...c]) {
       if (t.testId && t.testId !== "—") {
         m.set(t.testId, t);
       }
@@ -1504,6 +1517,13 @@ export function LocationCardSummary({
                 maxBodyHeight={compactMaxHeight}
               >
                 {agentToServerTests.length > 0 ? <TestsTableBody rows={agentToServerTests.slice(0, 10)} /> : null}
+              </MiniTable>
+              <MiniTable
+                title={`Agent-to-agent (${enabledA2a} enabled)`}
+                empty={agentToAgentTests.length === 0}
+                maxBodyHeight={compactMaxHeight}
+              >
+                {agentToAgentTests.length > 0 ? <TestsTableBody rows={agentToAgentTests.slice(0, 10)} /> : null}
               </MiniTable>
             </div>
           ) : null}
