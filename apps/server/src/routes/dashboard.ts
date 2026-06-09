@@ -24,7 +24,7 @@ import {
   getNetworkApplianceVlans,
   getNetworkChannelUtilizationHistory,
   getNetworkWirelessClientCountHistory,
-  getNetworkWirelessUsageHistory,
+  getNetworkWirelessSsids,
   type MerakiApplianceVlanRow,
   type MerakiNetworkChannelUtilizationRow,
 } from "../lib/merakiClient.js";
@@ -1336,9 +1336,10 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       const timespanRaw = q.timespan != null ? Number.parseInt(String(q.timespan), 10) : 3600;
       const timespanSec =
         Number.isFinite(timespanRaw) && timespanRaw >= 300 && timespanRaw <= 86_400 ? timespanRaw : 3600;
-      // 5-min resolution by default — matches Meraki's smallest valid resolution
-      // for these endpoints and keeps the response small for a 1h window.
-      const resolution = 300;
+      // Per Meraki API: `channelUtilizationHistory` only accepts 600/1200/3600/14400/86400,
+      // while `clientCountHistory` accepts 300/600/.... Keep them separate so we don't 400.
+      const channelUtilResolution = 600;
+      const clientCountResolution = 300;
 
       const site = await prisma.site.findUnique({ where: { id: siteId } });
       if (!site) {
@@ -1391,13 +1392,13 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
             getDeviceWirelessRadioSettings(apiKey, dev.serial),
             getNetworkChannelUtilizationHistory(apiKey, networkId, {
               timespan: timespanSec,
-              resolution,
+              resolution: channelUtilResolution,
               deviceSerial: dev.serial,
             }),
             getDeviceWirelessConnectionStats(apiKey, dev.serial, { timespan: timespanSec }),
             getNetworkWirelessClientCountHistory(apiKey, networkId, {
               timespan: timespanSec,
-              resolution,
+              resolution: clientCountResolution,
               deviceSerial: dev.serial,
             }),
           ]);
@@ -1513,80 +1514,39 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         }))
         .sort((a, b) => (a.band === b.band ? a.channel - b.channel : a.band.localeCompare(b.band)));
 
-      // ----- per-SSID aggregate (network-wide usage & client count by SSID slot 0..14) -----
-      // Iterates slots 0..14 (Meraki's fixed cap). We stop as soon as we get four
-      // consecutive empty responses to keep upstream calls under control on networks
-      // with few SSIDs configured.
-      const MAX_SSID_SLOTS = 15;
-      const MAX_CONSEC_EMPTY = 4;
-      const ssidEntries: WirelessSsidEntry[] = [];
-      let consecutiveEmpty = 0;
-      for (let n = 0; n < MAX_SSID_SLOTS; n++) {
-        if (consecutiveEmpty >= MAX_CONSEC_EMPTY) {
-          break;
-        }
-        const [usageRes, countRes] = await Promise.allSettled([
-          getNetworkWirelessUsageHistory(apiKey, networkId, { timespan: timespanSec, resolution, ssid: n }),
-          getNetworkWirelessClientCountHistory(apiKey, networkId, { timespan: timespanSec, resolution, ssid: n }),
-        ]);
-
-        if (usageRes.status === "rejected") {
-          // Empty SSID slots typically 404; we don't push an error noise entry for those.
-          const msg = String(usageRes.reason);
-          if (!/404/.test(msg)) {
-            errors.push(`ssid${n}/usage: ${msg.slice(0, 120)}`);
-          }
-        }
-        if (countRes.status === "rejected") {
-          const msg = String(countRes.reason);
-          if (!/404/.test(msg)) {
-            errors.push(`ssid${n}/count: ${msg.slice(0, 120)}`);
-          }
-        }
-
-        const usage = usageRes.status === "fulfilled" ? usageRes.value : [];
-        const counts = countRes.status === "fulfilled" ? countRes.value : [];
-        const avgClients = meanOrNull(counts.map((c) => c.clientCount));
-        const avgKbps = meanOrNull(
-          usage.map((u) => {
-            const sent = typeof u.sentKbps === "number" ? u.sentKbps : 0;
-            const recv = typeof u.receivedKbps === "number" ? u.receivedKbps : 0;
-            if (sent === 0 && recv === 0) {
-              return typeof u.totalKbps === "number" ? u.totalKbps : null;
-            }
-            return sent + recv;
-          }),
-        );
-
-        if ((avgClients ?? 0) === 0 && (avgKbps ?? 0) === 0) {
-          consecutiveEmpty += 1;
-          continue;
-        }
-        consecutiveEmpty = 0;
-
-        ssidEntries.push({
-          number: n,
-          name: `SSID ${n}`,
-          enabled: true,
-          avgClientCount: avgClients,
-          avgMbps: avgKbps != null ? Math.round((avgKbps / 1000) * 10) / 10 : null,
-          // Shares are filled in below once we know the network total.
-          clientSharePct: null,
-          trafficSharePct: null,
-        });
+      // ----- per-SSID config (single network-scoped call returns names + flags for all 15 slots) -----
+      // The previous design iterated `wireless/usageHistory?ssid=N` and `clientCountHistory?ssid=N`
+      // for slots 0..14, but Meraki requires `deviceSerial` on those endpoints (passing only `ssid`
+      // returns 400 "Must specify a device or network client"), and the 15-slot fan-out burned
+      // through the org's rate budget. We now fetch SSID configuration in one shot and surface
+      // name / auth / IP mode / band selection. True per-SSID load shares require N_APs × N_SSIDs
+      // calls and will land in a follow-up with proper rate-limit handling.
+      let ssids: WirelessSsidEntry[] = [];
+      try {
+        const ssidConfigs = await getNetworkWirelessSsids(apiKey, networkId);
+        ssids = ssidConfigs
+          .filter((s) => s.enabled)
+          .map((s) => ({
+            number: s.number,
+            name:
+              typeof s.name === "string" && s.name.trim()
+                ? s.name.trim()
+                : `SSID ${s.number}`,
+            enabled: true,
+            authMode: typeof s.authMode === "string" ? s.authMode : null,
+            wpaEncryptionMode:
+              typeof s.wpaEncryptionMode === "string" ? s.wpaEncryptionMode : null,
+            ipAssignmentMode:
+              typeof s.ipAssignmentMode === "string" ? s.ipAssignmentMode : null,
+            bandSelection: typeof s.bandSelection === "string" ? s.bandSelection : null,
+            minBitrateMbps: typeof s.minBitrate === "number" ? s.minBitrate : null,
+            visible: s.visible !== false,
+          }))
+          .sort((a, b) => a.number - b.number);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`ssids: ${msg.slice(0, 200)}`);
       }
-
-      const totalClients = ssidEntries.reduce((acc, s) => acc + (s.avgClientCount ?? 0), 0);
-      const totalMbps = ssidEntries.reduce((acc, s) => acc + (s.avgMbps ?? 0), 0);
-      const ssids: WirelessSsidEntry[] = ssidEntries.map((s) => ({
-        ...s,
-        clientSharePct:
-          totalClients > 0 && s.avgClientCount != null
-            ? Math.round((s.avgClientCount / totalClients) * 1000) / 10
-            : null,
-        trafficSharePct:
-          totalMbps > 0 && s.avgMbps != null ? Math.round((s.avgMbps / totalMbps) * 1000) / 10 : null,
-      }));
 
       const body: WirelessHealthCacheEntry = {
         networkId,

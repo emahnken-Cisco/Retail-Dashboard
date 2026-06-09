@@ -43,16 +43,21 @@ export type WirelessChannelEntry = {
 export type WirelessSsidEntry = {
   /** Meraki numeric SSID slot, 0–14. */
   number: number;
+  /** Configured SSID name from `GET /networks/{id}/wireless/ssids`. */
   name: string;
   enabled: boolean;
-  /** Average client count over the timespan. */
-  avgClientCount: number | null;
-  /** Total traffic in Mbps (sent + received) averaged over the timespan. */
-  avgMbps: number | null;
-  /** This SSID's share of total wireless client count, 0–100. */
-  clientSharePct: number | null;
-  /** This SSID's share of total wireless traffic, 0–100. */
-  trafficSharePct: number | null;
+  /** Authentication mode, e.g. "psk", "open", "8021x-radius". */
+  authMode: string | null;
+  /** Wireless encryption — only meaningful when authMode === "psk". */
+  wpaEncryptionMode: string | null;
+  /** Client IP assignment, e.g. "NAT mode", "Bridge mode", "Layer 3 roaming". */
+  ipAssignmentMode: string | null;
+  /** Band steering / single-band config. */
+  bandSelection: string | null;
+  /** Min bitrate clients must support to associate, Mbps. */
+  minBitrateMbps: number | null;
+  /** SSID broadcast visibility (vs hidden). */
+  visible: boolean;
 };
 
 export type WirelessHealthCacheEntry = {

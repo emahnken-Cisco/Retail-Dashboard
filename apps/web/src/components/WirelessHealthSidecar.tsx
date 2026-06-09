@@ -44,10 +44,12 @@ export type WirelessSsid = {
   number: number;
   name: string;
   enabled: boolean;
-  avgClientCount: number | null;
-  avgMbps: number | null;
-  clientSharePct: number | null;
-  trafficSharePct: number | null;
+  authMode: string | null;
+  wpaEncryptionMode: string | null;
+  ipAssignmentMode: string | null;
+  bandSelection: string | null;
+  minBitrateMbps: number | null;
+  visible: boolean;
 };
 
 export type WirelessHealthPayload = {
@@ -257,37 +259,71 @@ function ApCard({ ap }: { ap: WirelessAp }) {
   );
 }
 
-function SsidRow({ s }: { s: WirelessSsid }) {
-  const trafficTone = toneForFraction(s.trafficSharePct != null ? s.trafficSharePct / 100 : null);
-  const clientTone = toneForFraction(s.clientSharePct != null ? s.clientSharePct / 100 : null);
+function ssidAuthLabel(authMode: string | null, wpaEncryptionMode: string | null): string {
+  if (!authMode) return "—";
+  const a = authMode.toLowerCase();
+  if (a === "open") return "Open";
+  if (a === "open-with-radius") return "Open + RADIUS";
+  if (a === "psk") return wpaEncryptionMode ? `PSK · ${wpaEncryptionMode}` : "PSK";
+  if (a.startsWith("8021x")) return "802.1X";
+  return authMode;
+}
 
+function ssidBandLabel(bandSelection: string | null): string {
+  if (!bandSelection) return "—";
+  if (/band steering/i.test(bandSelection)) return "Dual + band steering";
+  if (/5 ghz/i.test(bandSelection)) return "5 GHz only";
+  if (/dual/i.test(bandSelection)) return "Dual band";
+  return bandSelection;
+}
+
+function SsidRow({ s }: { s: WirelessSsid }) {
   return (
-    <div className="card" style={{ padding: "0.7rem 0.85rem", display: "flex", flexDirection: "column", gap: 4 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+    <div className="card" style={{ padding: "0.7rem 0.85rem", display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
         <strong style={{ fontSize: "0.88rem" }}>{s.name}</strong>
         <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>slot {s.number}</span>
+        {!s.visible ? (
+          <span
+            style={{
+              fontSize: "0.66rem",
+              color: "var(--muted)",
+              padding: "1px 6px",
+              borderRadius: 4,
+              background: "var(--surface2)",
+            }}
+          >
+            hidden
+          </span>
+        ) : null}
       </div>
-      <div style={{ display: "flex", alignItems: "center", gap: "1rem", fontSize: "0.78rem", flexWrap: "wrap" }}>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+          gap: "0.35rem 0.85rem",
+          fontSize: "0.78rem",
+        }}
+      >
         <span style={{ color: "var(--muted)" }}>
-          avg clients{" "}
+          Auth{" "}
           <span style={{ color: "var(--text)", fontWeight: 600 }}>
-            {s.avgClientCount != null ? Math.round(s.avgClientCount) : "—"}
+            {ssidAuthLabel(s.authMode, s.wpaEncryptionMode)}
           </span>
         </span>
         <span style={{ color: "var(--muted)" }}>
-          avg traffic{" "}
+          IP mode{" "}
+          <span style={{ color: "var(--text)", fontWeight: 600 }}>{s.ipAssignmentMode ?? "—"}</span>
+        </span>
+        <span style={{ color: "var(--muted)" }}>
+          Band <span style={{ color: "var(--text)", fontWeight: 600 }}>{ssidBandLabel(s.bandSelection)}</span>
+        </span>
+        <span style={{ color: "var(--muted)" }}>
+          Min bitrate{" "}
           <span style={{ color: "var(--text)", fontWeight: 600 }}>
-            {s.avgMbps != null ? `${s.avgMbps.toFixed(1)} Mbps` : "—"}
+            {s.minBitrateMbps != null ? `${s.minBitrateMbps} Mbps` : "—"}
           </span>
         </span>
-        <HealthPill
-          tone={clientTone}
-          label={`${s.clientSharePct != null ? s.clientSharePct.toFixed(0) : "—"}% client share`}
-        />
-        <HealthPill
-          tone={trafficTone}
-          label={`${s.trafficSharePct != null ? s.trafficSharePct.toFixed(0) : "—"}% traffic share`}
-        />
       </div>
     </div>
   );
@@ -405,8 +441,8 @@ export function WirelessHealthSidecar({
                 )}
                 {data.ssids.length > 0 ? (
                   <p style={{ margin: "0.25rem 0 0", fontSize: "0.7rem", color: "var(--muted)" }}>
-                    Client and traffic shares act as load proxies — Meraki does not expose airtime
-                    per SSID directly.
+                    SSID configuration only — Meraki requires per-AP scoping for usage/client
+                    histories, so per-SSID load shares are deferred to a follow-up.
                   </p>
                 ) : null}
               </div>

@@ -559,3 +559,40 @@ export async function getDeviceWirelessConnectionStats(
     `/devices/${enc}/wireless/connectionStats?${qs.toString()}`,
   );
 }
+
+/**
+ * Row from `GET /networks/{networkId}/wireless/ssids` — SSID slot config.
+ * Meraki returns all 15 slots (number 0..14) even when unused; check `enabled`.
+ * Optional fields are quirky across firmware versions — only the ones the
+ * wireless health sidecar surfaces are typed.
+ */
+export type MerakiNetworkWirelessSsid = {
+  number: number;
+  name: string;
+  enabled: boolean;
+  /** "open" | "psk" | "8021x-radius" | "8021x-meraki" | "8021x-google" | "open-with-radius" | ... */
+  authMode?: string;
+  /** "WPA" | "WPA1 only" | "WPA1 and WPA2" | "WPA2 only" | "WPA3 Transition Mode" | "WPA3 only" */
+  wpaEncryptionMode?: string;
+  /** "NAT mode" | "Bridge mode" | "Layer 3 roaming" | "VPN" */
+  ipAssignmentMode?: string;
+  /** "Dual band operation" | "5 GHz band only" | "Dual band operation with Band Steering" */
+  bandSelection?: string;
+  /** Minimum bitrate in Mbps that clients must support to associate. */
+  minBitrate?: number;
+  /** "Allow all access" | "Block all access" | "Network access control list" */
+  splashPage?: string;
+  /** Whether this SSID is visible (vs hidden). */
+  visible?: boolean;
+};
+
+/** All 15 SSID slots configured on a wireless network. One call. */
+export async function getNetworkWirelessSsids(
+  apiKey: string,
+  networkId: string,
+): Promise<MerakiNetworkWirelessSsid[]> {
+  return merakiFetch<MerakiNetworkWirelessSsid[]>(
+    apiKey,
+    `/networks/${encodeURIComponent(networkId)}/wireless/ssids`,
+  );
+}
