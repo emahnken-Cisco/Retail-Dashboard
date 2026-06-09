@@ -8,7 +8,7 @@
  *   2) Per-AP block           — client count vs capacity, RSSI, per-band airtime / TX
  *   3) Per-SSID block         — traffic and client share across SSIDs
  */
-import { useEffect, useState, type CSSProperties } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { api } from "../api.js";
 import { SidecarFrame } from "./CircuitSidecars.js";
 import { ToneDot, toneForFraction, type GaugeTone } from "./SemiGauge.js";
@@ -52,6 +52,14 @@ export type WirelessSsid = {
   visible: boolean;
 };
 
+export type WirelessSsidLoadHint = {
+  estimatedCalls: number;
+  bulkLoadThreshold: number;
+  bulkLoadRecommended: boolean;
+  apsCount: number;
+  enabledSsidCount: number;
+};
+
 export type WirelessHealthPayload = {
   networkId: string;
   capturedAt: string;
@@ -59,8 +67,31 @@ export type WirelessHealthPayload = {
   channels: WirelessChannel[];
   aps: WirelessAp[];
   ssids: WirelessSsid[];
+  ssidLoadHint?: WirelessSsidLoadHint;
   note?: string;
 };
+
+export type WirelessSsidLoadEntry = {
+  ssidNumber: number;
+  ssidName: string;
+  avgClients: number;
+  avgKbps: number;
+  apsAggregated: number;
+  capturedAt: string;
+  timespanSeconds: number;
+  note?: string;
+};
+
+/**
+ * Per-SSID load state for the lazy-loaded shares section. Each SSID transitions
+ * idle → loading → loaded|error. We track this in the parent so the SsidRow
+ * can render share % computed across *all* loaded SSIDs.
+ */
+type SsidLoadState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "loaded"; data: WirelessSsidLoadEntry }
+  | { status: "error"; message: string };
 
 function useEscapeClose(open: boolean, onClose: () => void): void {
   useEffect(() => {
@@ -277,7 +308,80 @@ function ssidBandLabel(bandSelection: string | null): string {
   return bandSelection;
 }
 
-function SsidRow({ s }: { s: WirelessSsid }) {
+function formatKbps(kbps: number): string {
+  if (kbps >= 1000) return `${(kbps / 1000).toFixed(1)} Mbps`;
+  return `${kbps.toFixed(0)} kbps`;
+}
+
+function SsidLoadShare({
+  state,
+  totals,
+}: {
+  state: SsidLoadState;
+  totals: { clients: number; kbps: number; loadedCount: number };
+}) {
+  if (state.status === "idle") {
+    return null;
+  }
+  if (state.status === "loading") {
+    return (
+      <span style={{ fontSize: "0.74rem", color: "var(--muted)" }}>Loading share…</span>
+    );
+  }
+  if (state.status === "error") {
+    return (
+      <span style={{ fontSize: "0.74rem", color: "var(--danger)" }} title={state.message}>
+        Load failed
+      </span>
+    );
+  }
+  const d = state.data;
+  // Share only meaningful when ≥2 SSIDs are loaded — single-SSID denominator
+  // would always be 100% and that's misleading.
+  const showShare = totals.loadedCount >= 2;
+  const clientShare =
+    showShare && totals.clients > 0 ? (d.avgClients / totals.clients) * 100 : null;
+  const trafficShare =
+    showShare && totals.kbps > 0 ? (d.avgKbps / totals.kbps) * 100 : null;
+  return (
+    <div style={{ display: "flex", gap: 8, flexWrap: "wrap", fontSize: "0.74rem" }}>
+      <span style={{ color: "var(--muted)" }}>
+        clients{" "}
+        <span style={{ color: "var(--text)", fontWeight: 600 }}>{d.avgClients.toFixed(1)}</span>
+        {clientShare != null ? (
+          <span style={{ color: "var(--muted)" }}> ({clientShare.toFixed(0)}%)</span>
+        ) : null}
+      </span>
+      <span style={{ color: "var(--muted)" }}>
+        traffic{" "}
+        <span style={{ color: "var(--text)", fontWeight: 600 }}>{formatKbps(d.avgKbps)}</span>
+        {trafficShare != null ? (
+          <span style={{ color: "var(--muted)" }}> ({trafficShare.toFixed(0)}%)</span>
+        ) : null}
+      </span>
+      {d.note ? (
+        <span style={{ color: "var(--warn)" }} title={d.note}>
+          partial
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+function SsidRow({
+  s,
+  loadState,
+  onLoad,
+  showInlineLoadButton,
+  totals,
+}: {
+  s: WirelessSsid;
+  loadState: SsidLoadState;
+  onLoad: (ssidNumber: number) => void;
+  /** When true (large-site mode), show a "Load" button on the row itself. */
+  showInlineLoadButton: boolean;
+  totals: { clients: number; kbps: number; loadedCount: number };
+}) {
   return (
     <div className="card" style={{ padding: "0.7rem 0.85rem", display: "flex", flexDirection: "column", gap: 6 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
@@ -296,6 +400,26 @@ function SsidRow({ s }: { s: WirelessSsid }) {
             hidden
           </span>
         ) : null}
+        <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 8 }}>
+          <SsidLoadShare state={loadState} totals={totals} />
+          {showInlineLoadButton && loadState.status !== "loaded" && loadState.status !== "loading" ? (
+            <button
+              type="button"
+              onClick={() => onLoad(s.number)}
+              style={{
+                fontSize: "0.72rem",
+                padding: "2px 8px",
+                background: "var(--surface2)",
+                color: "var(--text)",
+                border: "1px solid var(--border, var(--surface2))",
+                borderRadius: 6,
+                cursor: "pointer",
+              }}
+            >
+              Load share
+            </button>
+          ) : null}
+        </span>
       </div>
       <div
         style={{
@@ -329,6 +453,139 @@ function SsidRow({ s }: { s: WirelessSsid }) {
   );
 }
 
+/**
+ * Top-of-SSID-list controls. Adapts based on the server-supplied `ssidLoadHint`:
+ * - bulkLoadRecommended === true  → "Load real shares" button (full fan-out).
+ * - bulkLoadRecommended === false → explanation + nudge to use per-row buttons.
+ * - hint missing                  → behave as small-site (safe default).
+ */
+function SsidLoadControls({
+  hint,
+  bulkInFlight,
+  loadedCount,
+  ssidCount,
+  onLoadAll,
+  onCancel,
+}: {
+  hint: WirelessSsidLoadHint | undefined;
+  bulkInFlight: boolean;
+  loadedCount: number;
+  ssidCount: number;
+  onLoadAll: () => void;
+  onCancel: () => void;
+}) {
+  const bulkRecommended = hint?.bulkLoadRecommended ?? true;
+  const estimatedSeconds = hint
+    ? Math.max(1, Math.round((hint.estimatedCalls / 3) * 0.35 + hint.estimatedCalls / 3))
+    : null;
+
+  if (bulkInFlight) {
+    return (
+      <div
+        className="card"
+        style={{
+          padding: "0.55rem 0.75rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          background: "var(--surface2)",
+        }}
+      >
+        <span style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
+          Loading shares… {loadedCount} / {ssidCount} done
+        </span>
+        <button
+          type="button"
+          onClick={onCancel}
+          style={{
+            fontSize: "0.72rem",
+            padding: "2px 10px",
+            background: "var(--surface)",
+            color: "var(--text)",
+            border: "1px solid var(--border, var(--surface2))",
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+
+  if (bulkRecommended) {
+    return (
+      <div
+        className="card"
+        style={{
+          padding: "0.55rem 0.75rem",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "space-between",
+          gap: 8,
+          background: "var(--surface2)",
+        }}
+      >
+        <span style={{ fontSize: "0.78rem", color: "var(--muted)" }}>
+          {loadedCount === 0 ? (
+            <>
+              Click to fetch live client &amp; traffic shares
+              {estimatedSeconds != null ? (
+                <> (~{estimatedSeconds}s, {hint?.estimatedCalls} Meraki calls)</>
+              ) : null}
+              .
+            </>
+          ) : (
+            <>
+              Loaded shares for {loadedCount} / {ssidCount} SSIDs. Re-run to refresh.
+            </>
+          )}
+        </span>
+        <button
+          type="button"
+          onClick={onLoadAll}
+          style={{
+            fontSize: "0.74rem",
+            fontWeight: 600,
+            padding: "4px 12px",
+            background: "var(--accent, #3a7bd5)",
+            color: "white",
+            border: "none",
+            borderRadius: 6,
+            cursor: "pointer",
+          }}
+        >
+          {loadedCount === 0 ? "Load real shares" : "Refresh shares"}
+        </button>
+      </div>
+    );
+  }
+
+  // Large-site mode: discourage "load all", route to per-row buttons.
+  return (
+    <div
+      className="card"
+      style={{
+        padding: "0.55rem 0.75rem",
+        display: "flex",
+        flexDirection: "column",
+        gap: 4,
+        background: "var(--surface2)",
+      }}
+    >
+      <span style={{ fontSize: "0.78rem", color: "var(--text)", fontWeight: 600 }}>
+        Large fleet — load shares per SSID
+      </span>
+      <span style={{ fontSize: "0.72rem", color: "var(--muted)" }}>
+        A full fan-out would take {hint?.estimatedCalls} Meraki calls
+        ({hint?.apsCount} APs × {hint?.enabledSsidCount} SSIDs × 2). Use the
+        “Load share” button on each row to drill in selectively.
+      </span>
+    </div>
+  );
+}
+
 export function WirelessHealthSidecar({
   open,
   onClose,
@@ -345,6 +602,10 @@ export function WirelessHealthSidecar({
   const [loading, setLoading] = useState<boolean>(false);
   const [err, setErr] = useState<string | null>(null);
   const [data, setData] = useState<WirelessHealthPayload | null>(null);
+  const [ssidLoads, setSsidLoads] = useState<Map<number, SsidLoadState>>(() => new Map());
+  const [bulkInFlight, setBulkInFlight] = useState<boolean>(false);
+  /** Set to true to cancel an in-progress bulk load between iterations. */
+  const bulkCancelRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (!open) {
@@ -353,6 +614,9 @@ export function WirelessHealthSidecar({
     setLoading(true);
     setErr(null);
     setData(null);
+    setSsidLoads(new Map());
+    setBulkInFlight(false);
+    bulkCancelRef.current = false;
     void api<WirelessHealthPayload>(`/api/dashboard/sites/${encodeURIComponent(siteId)}/wireless-health`)
       .then((r) => {
         setData(r);
@@ -366,6 +630,90 @@ export function WirelessHealthSidecar({
         setLoading(false);
       });
   }, [open, siteId]);
+
+  // Fetch the load-share aggregate for one SSID. Idempotent: callers can hit it
+  // for an already-loaded SSID and we'll no-op (cached on the server anyway).
+  const loadOne = useCallback(
+    async (ssidNumber: number): Promise<void> => {
+      // Snapshot the latest state to avoid double-loads when called from the bulk loop.
+      let alreadyHandled = false;
+      setSsidLoads((prev) => {
+        const existing = prev.get(ssidNumber);
+        if (existing?.status === "loaded" || existing?.status === "loading") {
+          alreadyHandled = true;
+          return prev;
+        }
+        const next = new Map(prev);
+        next.set(ssidNumber, { status: "loading" });
+        return next;
+      });
+      if (alreadyHandled) {
+        return;
+      }
+      try {
+        const r = await api<WirelessSsidLoadEntry>(
+          `/api/dashboard/sites/${encodeURIComponent(siteId)}/wireless-health/ssid-load/${ssidNumber}`,
+        );
+        setSsidLoads((prev) => {
+          const next = new Map(prev);
+          next.set(ssidNumber, { status: "loaded", data: r });
+          return next;
+        });
+      } catch (e) {
+        const message = e instanceof Error ? e.message : "Load failed";
+        setSsidLoads((prev) => {
+          const next = new Map(prev);
+          next.set(ssidNumber, { status: "error", message });
+          return next;
+        });
+      }
+    },
+    [siteId],
+  );
+
+  // Sequential bulk load with a small inter-request delay. The server already
+  // caches per-SSID, so re-runs of "Refresh" are cheap. Pacing matters because
+  // *each* call internally fans out 2*N_APs Meraki requests — too many in
+  // flight at once can blow the per-org 5/sec budget when other tabs are open.
+  const loadAll = useCallback(async (): Promise<void> => {
+    if (!data) return;
+    setBulkInFlight(true);
+    bulkCancelRef.current = false;
+    try {
+      for (const s of data.ssids) {
+        if (bulkCancelRef.current) {
+          break;
+        }
+        await loadOne(s.number);
+        // 350ms gap → effective ≤3 req/s of *our* endpoint, which itself bursts
+        // ≤2*N_APs Meraki calls. Headroom for ingestion jobs.
+        await new Promise((resolve) => setTimeout(resolve, 350));
+      }
+    } finally {
+      setBulkInFlight(false);
+      bulkCancelRef.current = false;
+    }
+  }, [data, loadOne]);
+
+  const cancelBulk = useCallback((): void => {
+    bulkCancelRef.current = true;
+  }, []);
+
+  // Compute totals across loaded SSIDs once per render — used by every SsidRow
+  // to display "X (Y%)" without each row re-reducing the map.
+  const loadedTotals = useMemo(() => {
+    let clients = 0;
+    let kbps = 0;
+    let loadedCount = 0;
+    for (const v of ssidLoads.values()) {
+      if (v.status === "loaded") {
+        clients += v.data.avgClients;
+        kbps += v.data.avgKbps;
+        loadedCount += 1;
+      }
+    }
+    return { clients, kbps, loadedCount };
+  }, [ssidLoads]);
 
   if (!open) {
     return null;
@@ -444,14 +792,39 @@ export function WirelessHealthSidecar({
                     No SSIDs reported wireless activity in this window.
                   </p>
                 ) : (
-                  data.ssids.map((s) => <SsidRow key={s.number} s={s} />)
+                  <>
+                    <SsidLoadControls
+                      hint={data.ssidLoadHint}
+                      bulkInFlight={bulkInFlight}
+                      loadedCount={loadedTotals.loadedCount}
+                      ssidCount={data.ssids.length}
+                      onLoadAll={() => {
+                        void loadAll();
+                      }}
+                      onCancel={cancelBulk}
+                    />
+                    {data.ssids.map((s) => (
+                      <SsidRow
+                        key={s.number}
+                        s={s}
+                        loadState={ssidLoads.get(s.number) ?? { status: "idle" }}
+                        onLoad={(n) => {
+                          void loadOne(n);
+                        }}
+                        showInlineLoadButton={
+                          data.ssidLoadHint ? !data.ssidLoadHint.bulkLoadRecommended : true
+                        }
+                        totals={loadedTotals}
+                      />
+                    ))}
+                    <p style={{ margin: "0.25rem 0 0", fontSize: "0.7rem", color: "var(--muted)" }}>
+                      Share % is computed across <em>loaded</em> SSIDs only — load all to
+                      see the full picture. Each load makes {data.ssidLoadHint?.apsCount ?? "N"} × 2
+                      Meraki calls (one per AP for clients and bytes); results cache for 5 minutes
+                      per SSID.
+                    </p>
+                  </>
                 )}
-                {data.ssids.length > 0 ? (
-                  <p style={{ margin: "0.25rem 0 0", fontSize: "0.7rem", color: "var(--muted)" }}>
-                    SSID configuration only — Meraki requires per-AP scoping for usage/client
-                    histories, so per-SSID load shares are deferred to a follow-up.
-                  </p>
-                ) : null}
               </div>
             </section>
 

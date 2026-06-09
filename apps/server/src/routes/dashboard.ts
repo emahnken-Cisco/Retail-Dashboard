@@ -25,6 +25,7 @@ import {
   getNetworkChannelUtilizationHistory,
   getNetworkWirelessClientCountHistory,
   getNetworkWirelessSsids,
+  getNetworkWirelessUsageHistory,
   type MerakiApplianceVlanRow,
   type MerakiNetworkChannelUtilizationRow,
 } from "../lib/merakiClient.js";
@@ -53,6 +54,13 @@ import {
   type WirelessHealthCacheEntry,
   type WirelessSsidEntry,
 } from "../lib/wirelessHealthCache.js";
+import {
+  getWirelessSsidLoadEntryAgeMs,
+  getWirelessSsidLoadFromCache,
+  setWirelessSsidLoadCache,
+  wirelessSsidLoadCacheKey,
+  type WirelessSsidLoadEntry,
+} from "../lib/wirelessSsidLoadCache.js";
 
 function isPayloadRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -1584,6 +1592,23 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         errors.push(`ssids: ${msg.slice(0, 200)}`);
       }
 
+      // Server-side policy: a fan-out of 2*apsCount*enabledSsidCount Meraki calls
+      // is acceptable as a single click ("load all") below this threshold.
+      // Above it the UI should show per-row "Load" buttons so the user controls
+      // when to spend the rate budget. Tunable without a UI redeploy.
+      const bulkLoadThreshold = (() => {
+        const raw = Number.parseInt(process.env.WIRELESS_SSID_LOAD_BULK_THRESHOLD ?? "20", 10);
+        return Number.isFinite(raw) && raw > 0 ? raw : 20;
+      })();
+      const estimatedCalls = perAp.length * ssids.length * 2;
+      const ssidLoadHint = {
+        estimatedCalls,
+        bulkLoadThreshold,
+        bulkLoadRecommended: estimatedCalls > 0 && estimatedCalls <= bulkLoadThreshold,
+        apsCount: perAp.length,
+        enabledSsidCount: ssids.length,
+      };
+
       const body: WirelessHealthCacheEntry = {
         networkId,
         capturedAt: new Date().toISOString(),
@@ -1591,10 +1616,178 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
         channels,
         aps: perAp,
         ssids,
+        ssidLoadHint,
         ...(errors.length > 0 ? { note: errors.join(" | ").slice(0, 800) } : {}),
       };
       setWirelessHealthCache(cacheKey, body);
       void reply.header("X-Wireless-Health-Cache", "MISS");
+      return body;
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Per-SSID load-share endpoint — opt-in / lazy.
+  //
+  // Cost: 2 Meraki calls per AP (clientCountHistory + usageHistory, both scoped
+  // by ssid + deviceSerial). The UI orchestrates which SSIDs to load and paces
+  // requests for sites above the bulkLoadThreshold (see `ssidLoadHint`).
+  //
+  // Returns aggregates only — share % is computed client-side by dividing each
+  // SSID's avgClients / avgKbps by the sum across all *loaded* SSIDs. That's
+  // honest about partial loads ("share among loaded SSIDs", not "share of
+  // network") and avoids querying full network totals for the denominator.
+  // ---------------------------------------------------------------------------
+  app.get(
+    "/api/dashboard/sites/:siteId/wireless-health/ssid-load/:ssidNumber",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { siteId, ssidNumber: ssidNumberRaw } = req.params as {
+        siteId: string;
+        ssidNumber: string;
+      };
+
+      // Validate ssidNumber strictly — Meraki accepts 0–14 only and we don't want
+      // arbitrary integers reaching the upstream call.
+      const ssidNumberParsed = Number.parseInt(ssidNumberRaw, 10);
+      if (
+        !Number.isFinite(ssidNumberParsed) ||
+        ssidNumberParsed < 0 ||
+        ssidNumberParsed > 14 ||
+        String(ssidNumberParsed) !== ssidNumberRaw.trim()
+      ) {
+        return reply.code(400).send({ error: "ssidNumber must be an integer 0–14" });
+      }
+      const ssidNumber = ssidNumberParsed;
+
+      const q = req.query as Record<string, string | undefined>;
+      const timespanRaw = q.timespan != null ? Number.parseInt(String(q.timespan), 10) : 3600;
+      const timespanSec =
+        Number.isFinite(timespanRaw) && timespanRaw >= 300 && timespanRaw <= 86_400 ? timespanRaw : 3600;
+      const resolution = 300;
+
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      if (!site.merakiNetworkId?.trim()) {
+        return reply.code(400).send({ error: "Site has no Meraki network linked" });
+      }
+
+      const cacheKey = wirelessSsidLoadCacheKey(siteId, ssidNumber, timespanSec);
+      const cached = getWirelessSsidLoadFromCache(cacheKey);
+      if (cached && q.refresh !== "1") {
+        const ageMs = getWirelessSsidLoadEntryAgeMs(cacheKey);
+        void reply.header("X-SSID-Load-Cache", "HIT");
+        if (ageMs != null) {
+          void reply.header("X-SSID-Load-Age-Ms", String(ageMs));
+        }
+        return cached;
+      }
+
+      // Resolve SSID name from the cached wireless-health payload so we don't
+      // need a second call to `/wireless/ssids`. Falls back to a synthetic name.
+      const wirelessCacheKey = wirelessHealthCacheKey(siteId, timespanSec);
+      const wirelessCached = getWirelessHealthFromCache(wirelessCacheKey);
+      const ssidConfig = wirelessCached?.ssids.find((s) => s.number === ssidNumber);
+      const ssidName = ssidConfig?.name ?? `SSID ${ssidNumber}`;
+      if (wirelessCached && !ssidConfig) {
+        return reply
+          .code(404)
+          .send({ error: `SSID ${ssidNumber} is not enabled on this network` });
+      }
+
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "meraki" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap?.payload) {
+        return reply.code(404).send({ error: "No Meraki snapshot for this site" });
+      }
+      const wirelessDevices = wirelessDevicesFromMerakiSnapshotPayload(snap.payload);
+      if (wirelessDevices.length === 0) {
+        return reply
+          .code(404)
+          .send({ error: "Latest Meraki snapshot has no wireless devices to query." });
+      }
+
+      const apiKey = await getMerakiApiKey();
+      if (!apiKey) {
+        return reply.code(503).send({ error: "Meraki API key not configured" });
+      }
+      const networkId = site.merakiNetworkId.trim();
+
+      const errors: string[] = [];
+
+      // Fan out 2 Meraki calls per AP: counts and bytes for *this* SSID at *that* AP.
+      // We parallelize per-AP since N_APs is bounded; the global per-org budget is
+      // protected by the cache TTL (5 min) and the UI's pacing of which SSIDs to
+      // load.
+      const results = await Promise.all(
+        wirelessDevices.map(async (dev) => {
+          const [countsRes, usageRes] = await Promise.allSettled([
+            getNetworkWirelessClientCountHistory(apiKey, networkId, {
+              timespan: timespanSec,
+              resolution,
+              deviceSerial: dev.serial,
+              ssid: ssidNumber,
+            }),
+            getNetworkWirelessUsageHistory(apiKey, networkId, {
+              timespan: timespanSec,
+              resolution,
+              deviceSerial: dev.serial,
+              ssid: ssidNumber,
+            }),
+          ]);
+          if (countsRes.status === "rejected") {
+            errors.push(
+              `count/${dev.serial}/ssid${ssidNumber}: ${String(countsRes.reason).slice(0, 120)}`,
+            );
+          }
+          if (usageRes.status === "rejected") {
+            errors.push(
+              `usage/${dev.serial}/ssid${ssidNumber}: ${String(usageRes.reason).slice(0, 120)}`,
+            );
+          }
+          const counts = countsRes.status === "fulfilled" ? countsRes.value : [];
+          const usage = usageRes.status === "fulfilled" ? usageRes.value : [];
+
+          const avgClientsForAp = meanOrNull(counts.map((r) => r.clientCount)) ?? 0;
+          const avgKbpsForAp =
+            meanOrNull(usage.map((r) => r.totalKbps ?? null)) ??
+            // Fallback: derive from sent + received if totalKbps isn't returned.
+            meanOrNull(
+              usage.map((r) => {
+                const s = typeof r.sentKbps === "number" ? r.sentKbps : 0;
+                const rcv = typeof r.receivedKbps === "number" ? r.receivedKbps : 0;
+                return s + rcv > 0 ? s + rcv : null;
+              }),
+            ) ??
+            0;
+
+          return {
+            ok: countsRes.status === "fulfilled" || usageRes.status === "fulfilled",
+            avgClientsForAp,
+            avgKbpsForAp,
+          };
+        }),
+      );
+
+      const apsAggregated = results.filter((r) => r.ok).length;
+      const avgClients = results.reduce((acc, r) => acc + r.avgClientsForAp, 0);
+      const avgKbps = results.reduce((acc, r) => acc + r.avgKbpsForAp, 0);
+
+      const body: WirelessSsidLoadEntry = {
+        ssidNumber,
+        ssidName,
+        avgClients: Math.round(avgClients * 10) / 10,
+        avgKbps: Math.round(avgKbps * 10) / 10,
+        apsAggregated,
+        capturedAt: new Date().toISOString(),
+        timespanSeconds: timespanSec,
+        ...(errors.length > 0 ? { note: errors.join(" | ").slice(0, 400) } : {}),
+      };
+      setWirelessSsidLoadCache(cacheKey, body);
+      void reply.header("X-SSID-Load-Cache", "MISS");
       return body;
     },
   );

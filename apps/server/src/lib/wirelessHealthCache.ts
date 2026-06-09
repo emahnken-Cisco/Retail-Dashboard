@@ -60,6 +60,24 @@ export type WirelessSsidEntry = {
   visible: boolean;
 };
 
+/**
+ * Hint to the client about whether the SSID load-share fan-out is small enough
+ * to "load all at once" (button at the top of the SSID list) or whether the
+ * site is large enough to warrant per-row drill-down. The threshold itself is
+ * server-side policy so we can tune it without redeploying the web bundle.
+ */
+export type WirelessSsidLoadHint = {
+  /** Total Meraki calls a full per-SSID load would require: 2 * apsCount * enabledSsidCount. */
+  estimatedCalls: number;
+  /** Threshold above which the UI should prefer per-row drill-down. */
+  bulkLoadThreshold: number;
+  /** `true` when estimatedCalls <= bulkLoadThreshold. */
+  bulkLoadRecommended: boolean;
+  /** Convenience copies for the UI. */
+  apsCount: number;
+  enabledSsidCount: number;
+};
+
 export type WirelessHealthCacheEntry = {
   networkId: string;
   capturedAt: string;
@@ -69,6 +87,8 @@ export type WirelessHealthCacheEntry = {
   ssids: WirelessSsidEntry[];
   /** Populated when one or more upstream Meraki calls failed; partial data is returned regardless. */
   note?: string;
+  /** Metadata to drive the SSID load-share section's "load all" vs "per-row" decision. */
+  ssidLoadHint?: WirelessSsidLoadHint;
 };
 
 const TTL_MS = Number.parseInt(process.env.WIRELESS_HEALTH_CACHE_TTL_MS ?? "60000", 10) || 60_000;
