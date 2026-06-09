@@ -11,7 +11,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { api } from "../api.js";
 import { SidecarFrame } from "./CircuitSidecars.js";
-import { SemiGauge, ToneDot, toneForFraction, type GaugeTone } from "./SemiGauge.js";
+import { ToneDot, toneForFraction, type GaugeTone } from "./SemiGauge.js";
 
 export type WirelessApBand = {
   band: "2.4 GHz" | "5 GHz" | "6 GHz";
@@ -244,7 +244,7 @@ function ApCard({ ap }: { ap: WirelessAp }) {
           />
           <HealthPill
             tone={rssiTone}
-            label={`avg RSSI ${ap.avgClientRssiDbm != null ? `${ap.avgClientRssiDbm} dBm` : "—"}`}
+            label={`avg RSSI ${ap.avgClientRssiDbm != null ? `${ap.avgClientRssiDbm} dBm` : "n/a"}`}
           />
         </div>
       </div>
@@ -426,6 +426,13 @@ export function WirelessHealthSidecar({
                 ) : (
                   data.aps.map((a) => <ApCard key={a.serial} ap={a} />)
                 )}
+                {data.aps.length > 0 ? (
+                  <p style={{ margin: "0.25rem 0 0", fontSize: "0.7rem", color: "var(--muted)" }}>
+                    avg RSSI shows "n/a" when Meraki's per-AP connection-stats
+                    endpoint doesn't carry signal quality (most current firmware) — a
+                    follow-up will derive it by iterating wireless clients.
+                  </p>
+                ) : null}
               </div>
             </section>
 

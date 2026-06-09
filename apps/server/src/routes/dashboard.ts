@@ -1286,10 +1286,20 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
   // calls per site so the cache materially matters).
   // ===========================================================================
 
-  function merakiRadioToBand(key: string): WirelessBand | null {
-    if (key === "wifi0") return "2.4 GHz";
-    if (key === "wifi1") return "5 GHz";
-    if (key === "wifi2") return "6 GHz";
+  /** Map UI band label to the `band` query value Meraki requires on channel-util calls. */
+  function bandQueryValue(band: WirelessBand): "2.4" | "5" | "6" {
+    if (band === "2.4 GHz") return "2.4";
+    if (band === "5 GHz") return "5";
+    return "6";
+  }
+
+  /** Extract the per-bucket "total airtime" from a flat per-band channel-util row, tolerating field-name drift. */
+  function rowTotalUtilization(row: MerakiNetworkChannelUtilizationRow): number | null {
+    if (typeof row.utilization === "number") return row.utilization;
+    if (typeof row.utilizationTotal === "number") return row.utilizationTotal;
+    if (typeof row.utilization80211 === "number" && typeof row.utilizationNon80211 === "number") {
+      return row.utilization80211 + row.utilizationNon80211;
+    }
     return null;
   }
 
@@ -1405,16 +1415,19 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
 
       const errors: string[] = [];
 
-      // ----- per-AP Meraki calls (parallel; per-AP errors are tolerated) -----
+      // ----- per-AP Meraki calls -----
+      // Strategy: first round = radio settings + connection stats + client count
+      // (all per-AP, parallel). Second round = channel utilization per (AP × band),
+      // because Meraki rejects deviceSerial-only requests and returns 400 unless
+      // `band` is specified too. We only query bands that the AP has actually
+      // configured (channel != null in radio settings), which avoids wasted calls
+      // and 400s on bands the model doesn't support.
+      const ALL_BANDS: WirelessBand[] = ["2.4 GHz", "5 GHz", "6 GHz"];
+
       const perAp = await Promise.all(
         wirelessDevices.map(async (dev) => {
-          const [radioRes, utilRes, statsRes, clientRes] = await Promise.allSettled([
+          const [radioRes, statsRes, clientRes] = await Promise.allSettled([
             getDeviceWirelessRadioSettings(apiKey, dev.serial),
-            getNetworkChannelUtilizationHistory(apiKey, networkId, {
-              timespan: timespanSec,
-              resolution: channelUtilResolution,
-              deviceSerial: dev.serial,
-            }),
             getDeviceWirelessConnectionStats(apiKey, dev.serial, { timespan: timespanSec }),
             getNetworkWirelessClientCountHistory(apiKey, networkId, {
               timespan: timespanSec,
@@ -1425,9 +1438,6 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
 
           if (radioRes.status === "rejected") {
             errors.push(`radio/${dev.serial}: ${String(radioRes.reason).slice(0, 120)}`);
-          }
-          if (utilRes.status === "rejected") {
-            errors.push(`util/${dev.serial}: ${String(utilRes.reason).slice(0, 120)}`);
           }
           if (statsRes.status === "rejected") {
             errors.push(`stats/${dev.serial}: ${String(statsRes.reason).slice(0, 120)}`);
@@ -1440,26 +1450,44 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
             radioRes.status === "fulfilled"
               ? radioRes.value
               : ({ serial: dev.serial } as Awaited<ReturnType<typeof getDeviceWirelessRadioSettings>>);
-          const util: MerakiNetworkChannelUtilizationRow[] =
-            utilRes.status === "fulfilled" ? utilRes.value : [];
           const stats =
             statsRes.status === "fulfilled"
               ? statsRes.value
               : ({} as Awaited<ReturnType<typeof getDeviceWirelessConnectionStats>>);
           const counts = clientRes.status === "fulfilled" ? clientRes.value : [];
 
-          // Average the channel-utilization series per band.
-          const buildBand = (radioKey: "wifi0" | "wifi1" | "wifi2", band: WirelessBand): WirelessApBandEntry | null => {
+          // Discover which bands this AP has configured; query channel-util only for those.
+          const configuredBands: Array<{ band: WirelessBand; rs: ReturnType<typeof bandFromRadioSettings> }> = [];
+          for (const band of ALL_BANDS) {
             const rs = bandFromRadioSettings(radio, band);
-            const totalSeries = util.map((u) => u[radioKey]?.utilization ?? null);
-            const nonWifiSeries = util.map((u) => u[radioKey]?.utilizationNon80211 ?? null);
-            const airtimePct = meanOrNull(totalSeries);
-            const nonWifiPct = meanOrNull(nonWifiSeries);
-            // Skip a band entirely if we have neither config nor utilization data —
-            // avoids rendering empty "—" rows for radios the AP doesn't have (e.g. 6 GHz on MR36).
-            if (rs.channel == null && airtimePct == null && nonWifiPct == null && rs.txPowerDbm == null) {
-              return null;
+            // Only query for bands that look configured. We still surface the band entry
+            // if the radio settings call failed entirely (rs.channel == null on all 3).
+            if (rs.channel != null || rs.channelWidthMhz != null || rs.txPowerDbm != null) {
+              configuredBands.push({ band, rs });
             }
+          }
+
+          // Fan out channel-util per (AP × configured band).
+          const utilResults = await Promise.allSettled(
+            configuredBands.map(({ band }) =>
+              getNetworkChannelUtilizationHistory(apiKey, networkId, {
+                timespan: timespanSec,
+                resolution: channelUtilResolution,
+                deviceSerial: dev.serial,
+                band: bandQueryValue(band),
+              }),
+            ),
+          );
+
+          const bands: WirelessApBandEntry[] = configuredBands.map(({ band, rs }, idx) => {
+            const utilRes = utilResults[idx];
+            if (utilRes?.status === "rejected") {
+              errors.push(`util/${dev.serial}/${bandQueryValue(band)}: ${String(utilRes.reason).slice(0, 120)}`);
+            }
+            const series: MerakiNetworkChannelUtilizationRow[] =
+              utilRes?.status === "fulfilled" ? utilRes.value : [];
+            const airtimePct = meanOrNull(series.map((r) => rowTotalUtilization(r)));
+            const nonWifiPct = meanOrNull(series.map((r) => r.utilizationNon80211 ?? null));
             return {
               band,
               channel: rs.channel,
@@ -1468,19 +1496,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
               nonWifiPct,
               txPowerDbm: rs.txPowerDbm,
             };
-          };
-
-          const bands: WirelessApBandEntry[] = [];
-          for (const [k, b] of [
-            ["wifi0", "2.4 GHz"],
-            ["wifi1", "5 GHz"],
-            ["wifi2", "6 GHz"],
-          ] as const) {
-            const entry = buildBand(k, b);
-            if (entry) {
-              bands.push(entry);
-            }
-          }
+          });
 
           // Average client count from the time series; round to nearest int.
           const clientAvg = meanOrNull(counts.map((c) => c.clientCount));

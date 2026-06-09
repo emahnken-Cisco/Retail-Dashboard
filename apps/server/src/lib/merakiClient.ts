@@ -421,32 +421,48 @@ export async function getNetworkApplianceVlans(
 }
 
 /**
- * Row from `GET /networks/{networkId}/wireless/channelUtilizationHistory` —
- * per-AP, per-band, time-bucketed airtime utilization.
+ * Row from `GET /networks/{networkId}/wireless/channelUtilizationHistory` when
+ * scoped by `deviceSerial + band`. Meraki returns flat per-bucket utilization
+ * for the requested band (no `wifi0/wifi1/wifi2` envelope in this mode).
+ *
+ * Different firmware versions surface slightly different field names; we type
+ * all variants as optional so the parser can pick whichever exists.
  */
 export type MerakiNetworkChannelUtilizationRow = {
   startTs: string;
   endTs: string;
-  /** Meraki radio names: `wifi0` = 2.4 GHz, `wifi1` = 5 GHz, `wifi2` = 6 GHz (when present). */
-  wifi0?: { utilization: number; utilization80211: number; utilizationNon80211: number } | null;
-  wifi1?: { utilization: number; utilization80211: number; utilizationNon80211: number } | null;
-  wifi2?: { utilization: number; utilization80211: number; utilizationNon80211: number } | null;
+  /** Total airtime utilization (0–100). Some firmware uses `utilization`, others `utilizationTotal`. */
+  utilization?: number | null;
+  utilizationTotal?: number | null;
+  /** 802.11 (Wi-Fi) component of total airtime. */
+  utilization80211?: number | null;
+  /** Non-802.11 (noise / interferers) component. */
+  utilizationNon80211?: number | null;
 };
 
+export type MerakiChannelUtilizationBand = "2.4" | "5" | "6";
+
 /**
- * Channel utilization history for a *specific access point* in the network, per band.
- * The Meraki endpoint requires one of `deviceSerial` / `clientId` / `apTag`; we always pass deviceSerial.
+ * Channel utilization history for a *specific access point* in the network, for one band.
+ * Meraki requires `deviceSerial` AND `band` together — passing only `deviceSerial`
+ * returns 400 "Must specify a network client or a device with a band".
  * Requires **dashboard:general:telemetry:read**.
  */
 export async function getNetworkChannelUtilizationHistory(
   apiKey: string,
   networkId: string,
-  opts: { timespan: number; resolution: number; deviceSerial: string },
+  opts: {
+    timespan: number;
+    resolution: number;
+    deviceSerial: string;
+    band: MerakiChannelUtilizationBand;
+  },
 ): Promise<MerakiNetworkChannelUtilizationRow[]> {
   const qs = new URLSearchParams();
   qs.set("timespan", String(opts.timespan));
   qs.set("resolution", String(opts.resolution));
   qs.set("deviceSerial", opts.deviceSerial);
+  qs.set("band", opts.band);
   return merakiFetch<MerakiNetworkChannelUtilizationRow[]>(
     apiKey,
     `/networks/${encodeURIComponent(networkId)}/wireless/channelUtilizationHistory?${qs.toString()}`,
