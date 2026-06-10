@@ -23,11 +23,13 @@ import {
   getNetworkApplianceUplinksUsageHistory,
   getNetworkApplianceVlans,
   getNetworkChannelUtilizationHistory,
+  getNetworkEvents,
   getNetworkWirelessClientCountHistory,
   getNetworkWirelessSsids,
   getNetworkWirelessUsageHistory,
   type MerakiApplianceVlanRow,
   type MerakiNetworkChannelUtilizationRow,
+  type MerakiNetworkEvent,
 } from "../lib/merakiClient.js";
 import { fetchEnterpriseTestLatencyLossSeries } from "../lib/teEnterpriseTestMetrics.js";
 import {
@@ -61,6 +63,14 @@ import {
   wirelessSsidLoadCacheKey,
   type WirelessSsidLoadEntry,
 } from "../lib/wirelessSsidLoadCache.js";
+import {
+  WIRELESS_CONNECTION_LOG_WINDOW_SECONDS,
+  getWirelessConnectionLogFromCache,
+  setWirelessConnectionLogCache,
+  wirelessConnectionLogCacheKey,
+  type WirelessConnectionLogEntry,
+  type WirelessConnectionLogWindow,
+} from "../lib/wirelessConnectionLogCache.js";
 
 function isPayloadRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -1807,6 +1817,122 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       setWirelessSsidLoadCache(cacheKey, body);
       void reply.header("X-SSID-Load-Cache", "MISS");
       return body;
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Per-AP wireless connection log.
+  //
+  // Surfaces Meraki dashboard events (association, deauth, 8021x, dhcp_no_lease,
+  // etc.) for a single MR / CW access point at a site. Drives the "View log"
+  // button under the Live column in the equipment table.
+  //
+  // Window slugs: 1h | 12h | 24h | 7d (mirrored from the admin lens default
+  // `wirelessConnLogDefaultWindow`). The UI passes the active window via the
+  // `window` query param; defaults to 12h here so a missing param still works.
+  //
+  // Cache: 30 s TTL per (site, serial, window) — short enough that operators
+  // triaging an incident see fresh events on re-open, long enough to dedupe
+  // double-clicks and rapid window-toggle interactions.
+  // ---------------------------------------------------------------------------
+  app.get(
+    "/api/dashboard/sites/:siteId/wireless/:serial/connection-log",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { siteId, serial } = req.params as { siteId: string; serial: string };
+
+      // Allow-list the serial format to prevent path traversal via the param —
+      // Meraki serials are 4 groups of 4 chars separated by dashes; we tolerate
+      // a slightly wider range to be lenient about future SKU naming.
+      const trimmedSerial = String(serial ?? "").trim().toUpperCase();
+      if (!/^[A-Z0-9-]{4,32}$/.test(trimmedSerial)) {
+        return reply.code(400).send({ error: "Invalid device serial" });
+      }
+
+      const q = req.query as Record<string, string | undefined>;
+      const rawWindow = q.window;
+      const window: WirelessConnectionLogWindow =
+        rawWindow === "1h" || rawWindow === "12h" || rawWindow === "24h" || rawWindow === "7d"
+          ? rawWindow
+          : "12h";
+
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      if (!site.merakiNetworkId?.trim()) {
+        return reply.code(400).send({ error: "Site has no Meraki network linked" });
+      }
+      const networkId = site.merakiNetworkId.trim();
+
+      // Confirm the requested serial is genuinely a wireless device in this
+      // site's latest snapshot. Prevents using this endpoint to scrape events
+      // for unrelated devices across the org by guessing serials.
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "meraki" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap?.payload) {
+        return reply.code(404).send({ error: "No Meraki snapshot for this site" });
+      }
+      const wirelessDevices = wirelessDevicesFromMerakiSnapshotPayload(snap.payload);
+      const match = wirelessDevices.find((d) => d.serial.toUpperCase() === trimmedSerial);
+      if (!match) {
+        return reply
+          .code(404)
+          .send({ error: "Serial is not a wireless device in this site's latest snapshot" });
+      }
+
+      const cacheKey = wirelessConnectionLogCacheKey(siteId, trimmedSerial, window);
+      const cached = getWirelessConnectionLogFromCache(cacheKey);
+      if (cached && q.refresh !== "1") {
+        void reply.header("X-Wireless-Conn-Log-Cache", "HIT");
+        return cached;
+      }
+
+      const apiKey = await getMerakiApiKey();
+      if (!apiKey) {
+        return reply.code(503).send({ error: "Meraki API key not configured" });
+      }
+
+      try {
+        // Meraki events are returned newest-first; one page of 1000 covers most
+        // sites for 12h, and even busy stadium MRs rarely emit > 1000 events in 24h.
+        // For 7d windows on extremely chatty networks we may miss older events;
+        // a follow-up could paginate using `endingBefore`/`pageEndAt` until we
+        // pass `now - windowSeconds`.
+        const page = await getNetworkEvents(apiKey, networkId, {
+          productType: "wireless",
+          deviceSerial: trimmedSerial,
+          perPage: 1000,
+        });
+
+        const cutoffMs = Date.now() - WIRELESS_CONNECTION_LOG_WINDOW_SECONDS[window] * 1000;
+        const eventsInWindow: MerakiNetworkEvent[] = (page.events ?? []).filter((e) => {
+          const t = Date.parse(e.occurredAt);
+          return Number.isFinite(t) && t >= cutoffMs;
+        });
+
+        const body: WirelessConnectionLogEntry = {
+          serial: trimmedSerial,
+          deviceName: match.name ?? null,
+          networkId,
+          window,
+          windowSeconds: WIRELESS_CONNECTION_LOG_WINDOW_SECONDS[window],
+          capturedAt: new Date().toISOString(),
+          events: eventsInWindow,
+          ...(typeof page.message === "string" && page.message.length > 0
+            ? { note: page.message.slice(0, 400) }
+            : {}),
+        };
+        setWirelessConnectionLogCache(cacheKey, body);
+        void reply.header("X-Wireless-Conn-Log-Cache", "MISS");
+        return body;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        req.log.warn({ err: e, siteId, serial: trimmedSerial, window }, "wireless connection log fetch failed");
+        return reply.code(502).send({ error: msg.slice(0, 600) });
+      }
     },
   );
 }

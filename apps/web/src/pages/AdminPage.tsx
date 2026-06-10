@@ -114,6 +114,7 @@ export function AdminPage() {
     mapWeatherTemperatureUnit?: "F" | "C";
     mapWeatherWindSpeedUnit?: "mph" | "ms" | "kmh";
     mapWeatherPrecipitationUnit?: "mm" | "in";
+    wirelessConnLogDefaultWindow?: "1h" | "12h" | "24h" | "7d";
   };
 
   return (
@@ -240,6 +241,32 @@ export function AdminPage() {
           />
           Show map lens (requires Google Maps key + enable below)
         </label>
+        <div className="form-group" style={{ marginTop: "0.65rem" }}>
+          <label className="label">Wireless connection log — default window</label>
+          <select
+            className="input"
+            style={{ maxWidth: 240 }}
+            value={lenses.wirelessConnLogDefaultWindow ?? "12h"}
+            onChange={(e) =>
+              void patch({
+                lenses: {
+                  ...lenses,
+                  wirelessConnLogDefaultWindow: e.target.value as "1h" | "12h" | "24h" | "7d",
+                },
+              })
+            }
+          >
+            <option value="1h">Last hour</option>
+            <option value="12h">Last 12 hours (default)</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+          </select>
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: "var(--muted)", lineHeight: 1.45 }}>
+            Drives the initial time window shown in the per-AP <strong>View log</strong> sidecar
+            (Site detail → Equipment table → MR row → Live column). Users can still flip windows
+            in the sidecar; this just controls the default the sidecar opens to.
+          </p>
+        </div>
         <p style={{ fontSize: "0.8rem", color: "var(--muted)", margin: "0.75rem 0 0", lineHeight: 1.45 }}>
           <strong>Map weather overlay:</strong> Uses <strong>OpenWeatherMap.org</strong> map tiles (precipitation,
           clouds, wind, temperature). The Google Maps JavaScript API does not ship a weather raster layer; add an

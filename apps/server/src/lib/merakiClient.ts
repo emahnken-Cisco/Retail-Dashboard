@@ -526,6 +526,90 @@ export async function getNetworkWirelessClientCountHistory(
 }
 
 /**
+ * One row from `GET /networks/{networkId}/events` — a single dashboard event
+ * (association, deauth, 8021x, dhcp_no_lease, etc.) scoped to a network and
+ * optionally filtered by productType / deviceSerial / clientMac.
+ *
+ * Meraki returns a free-form `eventData` map whose shape varies by event type;
+ * we surface it as a generic record and let the UI display known keys
+ * defensively.
+ */
+export type MerakiNetworkEvent = {
+  occurredAt: string;
+  networkId?: string;
+  type: string;
+  description?: string | null;
+  category?: string | null;
+  clientId?: string | null;
+  clientDescription?: string | null;
+  clientMac?: string | null;
+  deviceSerial?: string | null;
+  deviceName?: string | null;
+  ssidNumber?: number | null;
+  ssidName?: string | null;
+  eventData?: Record<string, unknown> | null;
+};
+
+/** Paginated envelope for `GET /networks/{id}/events`. */
+export type MerakiNetworkEventsPage = {
+  message: string | null;
+  pageStartAt: string | null;
+  pageEndAt: string | null;
+  events: MerakiNetworkEvent[];
+};
+
+/**
+ * Pull recent dashboard events for a network, optionally narrowing to a
+ * specific wireless / wired / appliance device.
+ *
+ * Notes:
+ *   - `productType` is REQUIRED by Meraki for multi-product networks; passing
+ *     `"wireless"` returns MR-only events (association, deauth, 8021x, etc.).
+ *   - `deviceSerial` filters to events emitted by one AP — exactly what the
+ *     per-AP connection-log sidecar wants.
+ *   - `perPage` max is 1000; we let the caller tune it.
+ *   - Meraki returns events newest-first.
+ */
+export async function getNetworkEvents(
+  apiKey: string,
+  networkId: string,
+  opts: {
+    productType?: "wireless" | "appliance" | "switch" | "camera" | "systemsManager" | "cellularGateway";
+    deviceSerial?: string;
+    clientMac?: string;
+    /** Filter to specific event types (e.g. `["association", "disassociation"]`). */
+    includedEventTypes?: string[];
+    excludedEventTypes?: string[];
+    /** Page size (max 1000). Default 100. */
+    perPage?: number;
+    /** Opaque token from `pageEndAt` of a prior call to walk further into history. */
+    endingBefore?: string;
+    startingAfter?: string;
+  } = {},
+): Promise<MerakiNetworkEventsPage> {
+  const qs = new URLSearchParams();
+  if (opts.productType) qs.set("productType", opts.productType);
+  if (opts.deviceSerial) qs.set("deviceSerial", opts.deviceSerial);
+  if (opts.clientMac) qs.set("clientMac", opts.clientMac);
+  if (Number.isFinite(opts.perPage)) {
+    const v = Math.max(3, Math.min(1000, Math.floor(opts.perPage as number)));
+    qs.set("perPage", String(v));
+  }
+  if (opts.endingBefore) qs.set("endingBefore", opts.endingBefore);
+  if (opts.startingAfter) qs.set("startingAfter", opts.startingAfter);
+  for (const t of opts.includedEventTypes ?? []) {
+    qs.append("includedEventTypes[]", t);
+  }
+  for (const t of opts.excludedEventTypes ?? []) {
+    qs.append("excludedEventTypes[]", t);
+  }
+  return merakiFetch<MerakiNetworkEventsPage>(
+    apiKey,
+    `/networks/${encodeURIComponent(networkId)}/events?${qs.toString()}`,
+  );
+}
+
+/**
  * Row from `GET /devices/{serial}/wireless/radio/settings` — per-band radio
  * configuration (channel, channel width, TX power) for an MR / CW access point.
  */

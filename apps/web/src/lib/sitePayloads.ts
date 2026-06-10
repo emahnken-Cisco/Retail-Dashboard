@@ -610,6 +610,12 @@ export function isMerakiCameraModel(model: string): boolean {
   return model.toUpperCase().startsWith("MV");
 }
 
+/** Wireless access point (MR* or CW* Catalyst Wi-Fi 6E/7). Used to gate the wireless connection-log link. */
+export function isMerakiWirelessApModel(model: string): boolean {
+  const p = model.toUpperCase();
+  return p.startsWith("MR") || p.startsWith("CW");
+}
+
 /** Wireless (MR*) or switch (MS*) — alert history in snapshots is keyed by device serial. */
 export function isMerakiMrOrMs(model: string): boolean {
   const p = model.toUpperCase();

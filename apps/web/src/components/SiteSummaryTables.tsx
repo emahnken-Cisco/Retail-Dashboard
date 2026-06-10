@@ -18,6 +18,7 @@ import {
   filterEquipmentDevices,
   isMerakiCameraModel,
   isMerakiMrOrMs,
+  isMerakiWirelessApModel,
   normalizeMerakiUplinkParam,
   teAgentToServerTestsForSelection,
   teTestsForAgentSelection,
@@ -26,6 +27,7 @@ import { EndpointAgentSidecar } from "./EndpointAgentSidecar.js";
 import { MerakiCameraSidecar } from "./MerakiCameraSidecar.js";
 import { MerakiEquipmentAlertsSidecar } from "./MerakiEquipmentAlertsSidecar.js";
 import { LocationCircuitsSidecar, WanCircuitClickSidecar } from "./CircuitSidecars.js";
+import { WirelessConnectionLogSidecar } from "./WirelessConnectionLogSidecar.js";
 import { UplinkHistorySidecar } from "./UplinkHistorySidecar.js";
 import { DhcpHealthSidecar } from "./DhcpHealthSidecar.js";
 import { WirelessHealthSidecar } from "./WirelessHealthSidecar.js";
@@ -192,14 +194,17 @@ function EquipmentTableBody({
   rows,
   onOpenMv,
   onOpenMrMsAlerts,
+  onOpenWirelessLog,
   networkAlerts = [],
 }: {
   rows: MerakiDeviceRow[];
   onOpenMv?: (r: MerakiDeviceRow) => void;
   onOpenMrMsAlerts?: (r: MerakiDeviceRow) => void;
+  /** Open the wireless connection-log sidecar for an MR / CW access point. */
+  onOpenWirelessLog?: (r: MerakiDeviceRow) => void;
   networkAlerts?: MerakiAlertHistoryRow[];
 }) {
-  const showLive = typeof onOpenMv === "function";
+  const showLive = typeof onOpenMv === "function" || typeof onOpenWirelessLog === "function";
   const showAlerts = typeof onOpenMrMsAlerts === "function";
   return (
     <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -225,14 +230,24 @@ function EquipmentTableBody({
               </td>
               {showLive ? (
                 <td style={td}>
-                  {isMerakiCameraModel(r.model) ? (
+                  {isMerakiCameraModel(r.model) && onOpenMv ? (
                     <button
                       type="button"
                       className="btn secondary"
                       style={{ fontSize: "0.72rem", padding: "0.2rem 0.45rem" }}
-                      onClick={() => onOpenMv!(r)}
+                      onClick={() => onOpenMv(r)}
                     >
                       Open feed
+                    </button>
+                  ) : isMerakiWirelessApModel(r.model) && onOpenWirelessLog ? (
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      style={{ fontSize: "0.72rem", padding: "0.2rem 0.45rem" }}
+                      onClick={() => onOpenWirelessLog(r)}
+                      title="Open the per-AP wireless connection log"
+                    >
+                      View log
                     </button>
                   ) : (
                     <span style={{ color: "var(--muted)" }}>—</span>
@@ -665,6 +680,7 @@ export function SiteDetailPanel({
   const [endpointDetailId, setEndpointDetailId] = useState<string | null>(null);
   const [mvCamera, setMvCamera] = useState<MerakiDeviceRow | null>(null);
   const [mrMsAlertsDevice, setMrMsAlertsDevice] = useState<MerakiDeviceRow | null>(null);
+  const [wirelessLogDevice, setWirelessLogDevice] = useState<MerakiDeviceRow | null>(null);
   const [wanCircuitSidecar, setWanCircuitSidecar] = useState<{
     serial: string;
     model: string;
@@ -702,6 +718,7 @@ export function SiteDetailPanel({
     setEndpointDetailId(null);
     setMvCamera(null);
     setMrMsAlertsDevice(null);
+    setWirelessLogDevice(null);
     setWanCircuitSidecar(null);
     setUplinkHistory(null);
     setCircuitsSidecarOpen(false);
@@ -1214,6 +1231,7 @@ export function SiteDetailPanel({
               rows={equipment}
               onOpenMv={(r) => setMvCamera(r)}
               onOpenMrMsAlerts={(r) => setMrMsAlertsDevice(r)}
+              onOpenWirelessLog={(r) => setWirelessLogDevice(r)}
               networkAlerts={meraki?.alerts ?? []}
             />
           ) : null}
@@ -1264,6 +1282,13 @@ export function SiteDetailPanel({
         networkAlerts={meraki?.alerts ?? []}
         alertsNote={meraki?.alertsNote}
         snapshotCapturedAt={merakiCapturedAt}
+      />
+      <WirelessConnectionLogSidecar
+        open={wirelessLogDevice != null}
+        onClose={() => setWirelessLogDevice(null)}
+        siteId={siteId}
+        serial={wirelessLogDevice?.serial ?? ""}
+        deviceLabel={wirelessLogDevice?.name ?? wirelessLogDevice?.serial ?? "AP"}
       />
       <DhcpHealthSidecar
         open={dhcpHealthOpen}
@@ -1388,6 +1413,7 @@ export function LocationCardSummary({
   const [endpointDetailId, setEndpointDetailId] = useState<string | null>(null);
   const [mvCamera, setMvCamera] = useState<MerakiDeviceRow | null>(null);
   const [mrMsAlertsDevice, setMrMsAlertsDevice] = useState<MerakiDeviceRow | null>(null);
+  const [wirelessLogDevice, setWirelessLogDevice] = useState<MerakiDeviceRow | null>(null);
   const [wanCircuitSidecar, setWanCircuitSidecar] = useState<{
     serial: string;
     model: string;
@@ -1408,6 +1434,7 @@ export function LocationCardSummary({
     setEndpointDetailId(null);
     setMvCamera(null);
     setMrMsAlertsDevice(null);
+    setWirelessLogDevice(null);
     setWanCircuitSidecar(null);
     setUplinkHistory(null);
     setCircuitsSidecarOpen(false);
@@ -1589,6 +1616,7 @@ export function LocationCardSummary({
                   rows={equipment.slice(0, 10)}
                   onOpenMv={(r) => setMvCamera(r)}
                   onOpenMrMsAlerts={(r) => setMrMsAlertsDevice(r)}
+                  onOpenWirelessLog={(r) => setWirelessLogDevice(r)}
                   networkAlerts={meraki?.alerts ?? []}
                 />
               ) : null}
@@ -1641,6 +1669,13 @@ export function LocationCardSummary({
         networkAlerts={meraki?.alerts ?? []}
         alertsNote={meraki?.alertsNote}
         snapshotCapturedAt={merakiCapturedAt}
+      />
+      <WirelessConnectionLogSidecar
+        open={wirelessLogDevice != null}
+        onClose={() => setWirelessLogDevice(null)}
+        siteId={siteId}
+        serial={wirelessLogDevice?.serial ?? ""}
+        deviceLabel={wirelessLogDevice?.name ?? wirelessLogDevice?.serial ?? "AP"}
       />
       <UplinkHistorySidecar
         open={uplinkHistory != null}
