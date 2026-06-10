@@ -18,6 +18,7 @@ import {
   filterEquipmentDevices,
   isMerakiCameraModel,
   isMerakiMrOrMs,
+  isMerakiWirelessApModel,
   normalizeMerakiUplinkParam,
   teAgentToAgentTestsForSelection,
   teAgentToServerTestsForSelection,
@@ -27,7 +28,10 @@ import { EndpointAgentSidecar } from "./EndpointAgentSidecar.js";
 import { MerakiCameraSidecar } from "./MerakiCameraSidecar.js";
 import { MerakiEquipmentAlertsSidecar } from "./MerakiEquipmentAlertsSidecar.js";
 import { LocationCircuitsSidecar, WanCircuitClickSidecar } from "./CircuitSidecars.js";
+import { WirelessConnectionLogSidecar } from "./WirelessConnectionLogSidecar.js";
 import { UplinkHistorySidecar } from "./UplinkHistorySidecar.js";
+import { DhcpHealthSidecar } from "./DhcpHealthSidecar.js";
+import { WirelessHealthSidecar } from "./WirelessHealthSidecar.js";
 import { api } from "../api.js";
 import { openWeatherIconTooltip } from "../lib/siteWeatherDisplay.js";
 import { WeatherGlyph } from "./WeatherGlyph.js";
@@ -191,14 +195,17 @@ function EquipmentTableBody({
   rows,
   onOpenMv,
   onOpenMrMsAlerts,
+  onOpenWirelessLog,
   networkAlerts = [],
 }: {
   rows: MerakiDeviceRow[];
   onOpenMv?: (r: MerakiDeviceRow) => void;
   onOpenMrMsAlerts?: (r: MerakiDeviceRow) => void;
+  /** Open the wireless connection-log sidecar for an MR / CW access point. */
+  onOpenWirelessLog?: (r: MerakiDeviceRow) => void;
   networkAlerts?: MerakiAlertHistoryRow[];
 }) {
-  const showLive = typeof onOpenMv === "function";
+  const showLive = typeof onOpenMv === "function" || typeof onOpenWirelessLog === "function";
   const showAlerts = typeof onOpenMrMsAlerts === "function";
   return (
     <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -224,14 +231,24 @@ function EquipmentTableBody({
               </td>
               {showLive ? (
                 <td style={td}>
-                  {isMerakiCameraModel(r.model) ? (
+                  {isMerakiCameraModel(r.model) && onOpenMv ? (
                     <button
                       type="button"
                       className="btn secondary"
                       style={{ fontSize: "0.72rem", padding: "0.2rem 0.45rem" }}
-                      onClick={() => onOpenMv!(r)}
+                      onClick={() => onOpenMv(r)}
                     >
                       Open feed
+                    </button>
+                  ) : isMerakiWirelessApModel(r.model) && onOpenWirelessLog ? (
+                    <button
+                      type="button"
+                      className="btn secondary"
+                      style={{ fontSize: "0.72rem", padding: "0.2rem 0.45rem" }}
+                      onClick={() => onOpenWirelessLog(r)}
+                      title="Open the per-AP wireless connection log"
+                    >
+                      View log
                     </button>
                   ) : (
                     <span style={{ color: "var(--muted)" }}>—</span>
@@ -572,12 +589,174 @@ function AgentsTableBody({ rows }: { rows: TEAgentRow[] }) {
   );
 }
 
+/**
+ * Compact Wi-Fi tone pill rendered in the endpoint agents table.
+ *
+ * Tones (driven by `WirelessEndpointCorrelation.tone`):
+ *   * `green`   — endpoint is on a matched MR with healthy RSSI and no recent failures
+ *   * `amber`   — borderline RSSI or recent assoc/auth/DHCP failures on the MR
+ *   * `red`     — poor RSSI or repeated failures (impacted)
+ *   * `neutral` — wired, no Wi-Fi data, or no matching MR at the site
+ *
+ * The `title` attribute (native browser tooltip) surfaces the matched MR
+ * name + SSID + RSSI when present so the user can hover to triage without
+ * opening the sidecar. Clicking the matched MR name (when shown) hops to
+ * the AP connection-log sidecar via `onOpenAPLog`.
+ */
+function WifiPill({
+  corr,
+}: {
+  corr: TEEndpointAgentRow["wirelessCorrelation"] | undefined;
+}) {
+  if (!corr) {
+    return (
+      <span
+        title="No Wi-Fi correlation in this snapshot (TE ingest pre-dates the feature or no Meraki link)."
+        style={{
+          ...pillBase,
+          background: "var(--surface2)",
+          color: "var(--muted)",
+        }}
+      >
+        —
+      </span>
+    );
+  }
+  const palette = wifiTonePalette(corr.tone);
+  // Pill layout: <SSID or "Wired"> · <Matched MR name> · <RSSI>
+  // We intentionally place the MR name between SSID and dBm so operators can
+  // read "user is on Lan-Solo via MR-LAB-AP-03 at -66 dBm" left-to-right.
+  const bits: string[] = [];
+  if (corr.connectionType === "Wired") bits.push("Wired");
+  if (corr.connectionType === "Wireless" && corr.ssid) bits.push(corr.ssid);
+  if (corr.matchedMeraki?.name) {
+    bits.push(corr.matchedMeraki.name);
+  } else if (corr.matchedMeraki?.serial) {
+    bits.push(corr.matchedMeraki.serial);
+  }
+  if (corr.rssiDbm != null) bits.push(`${corr.rssiDbm} dBm`);
+
+  const titleParts: string[] = [`Wi-Fi: ${wifiToneLabel(corr.tone)} · ${wifiReasonLabel(corr.reason)}`];
+  if (corr.matchedMeraki) {
+    const via = corr.matchMethod === "bssid" ? " — matched via BSSID" : "";
+    titleParts.push(
+      `Matched MR ${corr.matchedMeraki.name ?? corr.matchedMeraki.serial} (${corr.matchedMeraki.serial})${via}`,
+    );
+  }
+  if (corr.rssiDbm != null) titleParts.push(`RSSI ${corr.rssiDbm} dBm`);
+  if (corr.signalQualityDb != null) titleParts.push(`SNR ${corr.signalQualityDb} dB`);
+  if (corr.recentFailureCount > 0) {
+    titleParts.push(`${corr.recentFailureCount} recent failure event(s)`);
+  }
+  return (
+    <span
+      title={titleParts.join("\n")}
+      style={{
+        ...pillBase,
+        background: palette.bg,
+        color: palette.fg,
+        borderColor: palette.border,
+        borderStyle: "solid",
+        borderWidth: 1,
+      }}
+    >
+      <span style={{ marginRight: "0.35rem" }}>{wifiToneGlyph(corr.tone)}</span>
+      {bits.join(" · ") || wifiToneLabel(corr.tone)}
+    </span>
+  );
+}
+
+const pillBase: CSSProperties = {
+  display: "inline-flex",
+  alignItems: "center",
+  fontSize: "0.7rem",
+  lineHeight: 1.15,
+  padding: "0.15rem 0.45rem",
+  borderRadius: 999,
+  whiteSpace: "nowrap",
+  maxWidth: 240,
+  overflow: "hidden",
+  textOverflow: "ellipsis",
+};
+
+function wifiTonePalette(
+  tone: NonNullable<TEEndpointAgentRow["wirelessCorrelation"]>["tone"],
+): { bg: string; fg: string; border: string } {
+  switch (tone) {
+    case "green":
+      return { bg: "rgba(34, 197, 94, 0.18)", fg: "#15803d", border: "rgba(34, 197, 94, 0.35)" };
+    case "amber":
+      return { bg: "rgba(245, 158, 11, 0.18)", fg: "#b45309", border: "rgba(245, 158, 11, 0.4)" };
+    case "red":
+      return { bg: "rgba(239, 68, 68, 0.18)", fg: "#b91c1c", border: "rgba(239, 68, 68, 0.4)" };
+    case "neutral":
+    default:
+      return { bg: "var(--surface2)", fg: "var(--muted)", border: "var(--surface2)" };
+  }
+}
+
+function wifiToneGlyph(
+  tone: NonNullable<TEEndpointAgentRow["wirelessCorrelation"]>["tone"],
+): string {
+  switch (tone) {
+    case "green":
+      return "●";
+    case "amber":
+      return "◐";
+    case "red":
+      return "▲";
+    default:
+      return "○";
+  }
+}
+
+function wifiToneLabel(
+  tone: NonNullable<TEEndpointAgentRow["wirelessCorrelation"]>["tone"],
+): string {
+  switch (tone) {
+    case "green":
+      return "Healthy";
+    case "amber":
+      return "Borderline";
+    case "red":
+      return "Impacted";
+    default:
+      return "n/a";
+  }
+}
+
+function wifiReasonLabel(
+  reason: NonNullable<TEEndpointAgentRow["wirelessCorrelation"]>["reason"],
+): string {
+  switch (reason) {
+    case "wired":
+      return "Endpoint is on Ethernet";
+    case "no-wireless-data":
+      return "No Wi-Fi data reported";
+    case "no-meraki-match":
+      return "No matching MR at this site";
+    case "weak-rssi":
+      return "Weak RSSI";
+    case "poor-rssi":
+      return "Poor RSSI (impacted)";
+    case "recent-failures":
+      return "Recent association/auth failures on MR";
+    case "healthy":
+      return "Healthy";
+    default:
+      return "—";
+  }
+}
+
 function EndpointAgentsTableBody({
   rows,
   onOpen,
+  onOpenAPLog,
 }: {
   rows: TEEndpointAgentRow[];
   onOpen: (id: string) => void;
+  /** Jump directly to the matched MR's connection log when the user clicks "Open AP log". */
+  onOpenAPLog?: (mr: { serial: string; name: string | null }) => void;
 }) {
   return (
     <table style={{ width: "100%", borderCollapse: "collapse" }}>
@@ -586,6 +765,7 @@ function EndpointAgentsTableBody({
           <th style={th}>Hostname</th>
           <th style={th}>Platform</th>
           <th style={th}>Status</th>
+          <th style={th}>Wi-Fi</th>
           <th style={th}>Last seen</th>
           <th style={th} />
         </tr>
@@ -601,6 +781,26 @@ function EndpointAgentsTableBody({
             </td>
             <td style={{ ...td, color: "var(--muted)", fontSize: "0.78rem" }}>{r.platform}</td>
             <td style={td}>{r.status}</td>
+            <td style={{ ...td, verticalAlign: "middle" }}>
+              <WifiPill corr={r.wirelessCorrelation} />
+              {r.wirelessCorrelation?.matchedMeraki && onOpenAPLog ? (
+                <div style={{ marginTop: "0.25rem" }}>
+                  <button
+                    type="button"
+                    className="btn secondary"
+                    style={{ fontSize: "0.65rem", padding: "0.15rem 0.4rem" }}
+                    onClick={() =>
+                      onOpenAPLog({
+                        serial: r.wirelessCorrelation!.matchedMeraki!.serial,
+                        name: r.wirelessCorrelation!.matchedMeraki!.name,
+                      })
+                    }
+                  >
+                    Open AP log →
+                  </button>
+                </div>
+              ) : null}
+            </td>
             <td style={{ ...td, fontSize: "0.75rem", whiteSpace: "nowrap" }}>
               {r.lastSeen ? new Date(r.lastSeen).toLocaleString() : "—"}
             </td>
@@ -664,6 +864,7 @@ export function SiteDetailPanel({
   const [endpointDetailId, setEndpointDetailId] = useState<string | null>(null);
   const [mvCamera, setMvCamera] = useState<MerakiDeviceRow | null>(null);
   const [mrMsAlertsDevice, setMrMsAlertsDevice] = useState<MerakiDeviceRow | null>(null);
+  const [wirelessLogDevice, setWirelessLogDevice] = useState<MerakiDeviceRow | null>(null);
   const [wanCircuitSidecar, setWanCircuitSidecar] = useState<{
     serial: string;
     model: string;
@@ -677,6 +878,8 @@ export function SiteDetailPanel({
     status: string | null;
   } | null>(null);
   const [circuitsSidecarOpen, setCircuitsSidecarOpen] = useState(false);
+  const [dhcpHealthOpen, setDhcpHealthOpen] = useState<boolean>(false);
+  const [wirelessHealthOpen, setWirelessHealthOpen] = useState<boolean>(false);
   const [showSiteWeather, setShowSiteWeather] = useState(false);
   const [weatherLoading, setWeatherLoading] = useState(false);
   const [weatherErr, setWeatherErr] = useState<string | null>(null);
@@ -699,9 +902,12 @@ export function SiteDetailPanel({
     setEndpointDetailId(null);
     setMvCamera(null);
     setMrMsAlertsDevice(null);
+    setWirelessLogDevice(null);
     setWanCircuitSidecar(null);
     setUplinkHistory(null);
     setCircuitsSidecarOpen(false);
+    setDhcpHealthOpen(false);
+    setWirelessHealthOpen(false);
   }, [siteId, locationName]);
   useEffect(() => {
     setShowSiteWeather(false);
@@ -1019,6 +1225,59 @@ export function SiteDetailPanel({
           ) : (
             <p style={{ margin: 0, fontSize: "0.85rem", color: "var(--muted)" }}>No Meraki snapshot.</p>
           )}
+          {meraki ? (
+            <div
+              style={{
+                display: "flex",
+                flexWrap: "wrap",
+                gap: 8,
+                marginTop: 2,
+              }}
+            >
+              <button
+                type="button"
+                onClick={() => setDhcpHealthOpen(true)}
+                title="Per-VLAN DHCP scope usage and options"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  background: "var(--surface2)",
+                  color: "var(--text)",
+                  border: "1px solid transparent",
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ color: "var(--accent)" }}>DHCP</span>
+                <span style={{ color: "var(--muted)", fontWeight: 500 }}>scope health</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setWirelessHealthOpen(true)}
+                title="Per-AP, per-channel, and per-SSID wireless health"
+                style={{
+                  display: "inline-flex",
+                  alignItems: "center",
+                  gap: 6,
+                  padding: "4px 10px",
+                  borderRadius: 999,
+                  background: "var(--surface2)",
+                  color: "var(--text)",
+                  border: "1px solid transparent",
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                <span style={{ color: "var(--accent)" }}>Wireless</span>
+                <span style={{ color: "var(--muted)", fontWeight: 500 }}>health</span>
+              </button>
+            </div>
+          ) : null}
         </div>
         <MiniTable title="ThousandEyes agents at site" empty={agents.length === 0} maxBodyHeight={panelMaxHeight}>
           {agents.length > 0 ? <AgentsTableBody rows={agents} /> : null}
@@ -1165,6 +1424,7 @@ export function SiteDetailPanel({
               rows={equipment}
               onOpenMv={(r) => setMvCamera(r)}
               onOpenMrMsAlerts={(r) => setMrMsAlertsDevice(r)}
+              onOpenWirelessLog={(r) => setWirelessLogDevice(r)}
               networkAlerts={meraki?.alerts ?? []}
             />
           ) : null}
@@ -1185,11 +1445,31 @@ export function SiteDetailPanel({
             maxBodyHeight={panelMaxHeight}
           >
             {te.endpointAgents.length > 0 ? (
-              <EndpointAgentsTableBody rows={te.endpointAgents} onOpen={setEndpointDetailId} />
+              <EndpointAgentsTableBody
+                rows={te.endpointAgents}
+                onOpen={setEndpointDetailId}
+                onOpenAPLog={(mr) => {
+                  // Look up model/status from the latest Meraki snapshot so the
+                  // existing AP log sidecar header renders the same info as
+                  // when entered from the equipment table; fall back to a
+                  // synthetic row when not found (e.g. snapshot lag).
+                  const dev = meraki?.devices.find((d) => d.serial === mr.serial);
+                  setWirelessLogDevice(
+                    dev ?? {
+                      serial: mr.serial,
+                      name: mr.name ?? mr.serial,
+                      model: "—",
+                      status: "—",
+                    },
+                  );
+                }}
+              />
             ) : null}
           </MiniTable>
           <p style={{ margin: "0.5rem 0 0", fontSize: "0.72rem", color: "var(--muted)", lineHeight: 1.45 }}>
             Matched by <strong>TE tag</strong> on computer/agent name or ~<strong>80 km</strong> of location coordinates.
+            The <strong>Wi-Fi</strong> column joins each agent's wireless MAC to the site's Meraki MR fleet —
+            tone reflects RSSI vs. admin thresholds plus recent association/auth failures on the matched AP.
             Details calls ThousandEyes live APIs (expanded agent, path-vis / HTTP results for scheduled tests).
           </p>
         </div>
@@ -1201,6 +1481,18 @@ export function SiteDetailPanel({
         open={endpointDetailId != null}
         onClose={() => setEndpointDetailId(null)}
         subtitle={endpointSubtitle}
+        onOpenAPLog={(mr) => {
+          const dev = meraki?.devices.find((d) => d.serial === mr.serial);
+          setEndpointDetailId(null);
+          setWirelessLogDevice(
+            dev ?? {
+              serial: mr.serial,
+              name: mr.name ?? mr.serial,
+              model: "—",
+              status: "—",
+            },
+          );
+        }}
       />
       <MerakiCameraSidecar
         siteId={siteId}
@@ -1215,6 +1507,25 @@ export function SiteDetailPanel({
         networkAlerts={meraki?.alerts ?? []}
         alertsNote={meraki?.alertsNote}
         snapshotCapturedAt={merakiCapturedAt}
+      />
+      <WirelessConnectionLogSidecar
+        open={wirelessLogDevice != null}
+        onClose={() => setWirelessLogDevice(null)}
+        siteId={siteId}
+        serial={wirelessLogDevice?.serial ?? ""}
+        deviceLabel={wirelessLogDevice?.name ?? wirelessLogDevice?.serial ?? "AP"}
+      />
+      <DhcpHealthSidecar
+        open={dhcpHealthOpen}
+        onClose={() => setDhcpHealthOpen(false)}
+        siteId={siteId}
+        locationName={locationName}
+      />
+      <WirelessHealthSidecar
+        open={wirelessHealthOpen}
+        onClose={() => setWirelessHealthOpen(false)}
+        siteId={siteId}
+        locationName={locationName}
       />
       <UplinkHistorySidecar
         open={uplinkHistory != null}
@@ -1327,6 +1638,7 @@ export function LocationCardSummary({
   const [endpointDetailId, setEndpointDetailId] = useState<string | null>(null);
   const [mvCamera, setMvCamera] = useState<MerakiDeviceRow | null>(null);
   const [mrMsAlertsDevice, setMrMsAlertsDevice] = useState<MerakiDeviceRow | null>(null);
+  const [wirelessLogDevice, setWirelessLogDevice] = useState<MerakiDeviceRow | null>(null);
   const [wanCircuitSidecar, setWanCircuitSidecar] = useState<{
     serial: string;
     model: string;
@@ -1347,6 +1659,7 @@ export function LocationCardSummary({
     setEndpointDetailId(null);
     setMvCamera(null);
     setMrMsAlertsDevice(null);
+    setWirelessLogDevice(null);
     setWanCircuitSidecar(null);
     setUplinkHistory(null);
     setCircuitsSidecarOpen(false);
@@ -1538,6 +1851,7 @@ export function LocationCardSummary({
                   rows={equipment.slice(0, 10)}
                   onOpenMv={(r) => setMvCamera(r)}
                   onOpenMrMsAlerts={(r) => setMrMsAlertsDevice(r)}
+                  onOpenWirelessLog={(r) => setWirelessLogDevice(r)}
                   networkAlerts={meraki?.alerts ?? []}
                 />
               ) : null}
@@ -1564,7 +1878,21 @@ export function LocationCardSummary({
             maxBodyHeight={compactMaxHeight}
           >
             {te.endpointAgents.length > 0 ? (
-              <EndpointAgentsTableBody rows={te.endpointAgents.slice(0, 8)} onOpen={setEndpointDetailId} />
+              <EndpointAgentsTableBody
+                rows={te.endpointAgents.slice(0, 8)}
+                onOpen={setEndpointDetailId}
+                onOpenAPLog={(mr) => {
+                  const dev = meraki?.devices.find((d) => d.serial === mr.serial);
+                  setWirelessLogDevice(
+                    dev ?? {
+                      serial: mr.serial,
+                      name: mr.name ?? mr.serial,
+                      model: "—",
+                      status: "—",
+                    },
+                  );
+                }}
+              />
             ) : null}
           </MiniTable>
         </div>
@@ -1576,6 +1904,18 @@ export function LocationCardSummary({
         open={endpointDetailId != null}
         onClose={() => setEndpointDetailId(null)}
         subtitle={endpointSubtitle}
+        onOpenAPLog={(mr) => {
+          const dev = meraki?.devices.find((d) => d.serial === mr.serial);
+          setEndpointDetailId(null);
+          setWirelessLogDevice(
+            dev ?? {
+              serial: mr.serial,
+              name: mr.name ?? mr.serial,
+              model: "—",
+              status: "—",
+            },
+          );
+        }}
       />
       <MerakiCameraSidecar
         siteId={siteId}
@@ -1590,6 +1930,13 @@ export function LocationCardSummary({
         networkAlerts={meraki?.alerts ?? []}
         alertsNote={meraki?.alertsNote}
         snapshotCapturedAt={merakiCapturedAt}
+      />
+      <WirelessConnectionLogSidecar
+        open={wirelessLogDevice != null}
+        onClose={() => setWirelessLogDevice(null)}
+        siteId={siteId}
+        serial={wirelessLogDevice?.serial ?? ""}
+        deviceLabel={wirelessLogDevice?.name ?? wirelessLogDevice?.serial ?? "AP"}
       />
       <UplinkHistorySidecar
         open={uplinkHistory != null}

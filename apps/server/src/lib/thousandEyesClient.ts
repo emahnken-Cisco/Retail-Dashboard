@@ -117,15 +117,30 @@ export async function teFetchAbsolute<T>(token: string, absoluteUrl: string): Pr
 
 type TeHalLinks = { _links?: { next?: { href?: string } } };
 
-/** Paginated `GET /endpoint/agents` (UUID endpoint agents, not enterprise agents). */
+/**
+ * Paginated `GET /endpoint/agents` (UUID endpoint agents, not enterprise agents).
+ *
+ * `expand` (optional) is forwarded as the TE `expand` query param. Allowed
+ * values include `networkInterfaceProfiles`, `vpnProfiles`, `clients` — pass
+ * `["networkInterfaceProfiles"]` to retrieve current Wi‑Fi connection info
+ * (SSID, BSSID, RSSI, signal-to-noise, wireless MAC) in the listing call so
+ * downstream correlators don't need per-agent expansion fan-out.
+ */
 export async function listAllEndpointAgents(
   token: string,
   maxTotal = 500,
   scope?: TeAccountScope,
+  expand?: ReadonlyArray<string>,
 ): Promise<unknown[]> {
   const out: unknown[] = [];
   const initialQs = new URLSearchParams({ max: "100" });
   appendAid(initialQs, scope);
+  for (const e of expand ?? []) {
+    const v = String(e ?? "").trim();
+    if (v) {
+      initialQs.append("expand", v);
+    }
+  }
   let pathOrUrl: string | null = `/endpoint/agents?${initialQs.toString()}`;
   while (pathOrUrl && out.length < maxTotal) {
     const data = (pathOrUrl.startsWith("http")

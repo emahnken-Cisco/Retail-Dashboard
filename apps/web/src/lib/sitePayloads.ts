@@ -171,6 +171,54 @@ export type TEAgentRow = {
   agentState: string;
 };
 
+/**
+ * Wi-Fi correlation between a TE Endpoint Agent and a Meraki MR access point,
+ * pre-computed during TE ingest. Drives the Wi-Fi tone pill in the endpoint
+ * agents table and the "Wi-Fi correlation" section in the endpoint sidecar.
+ *
+ * `tone` summarizes severity at-a-glance; richer fields let the sidecar
+ * display SSID/BSSID/RSSI plus the matched MR serial when present.
+ */
+export type WirelessEndpointCorrelationTone = "green" | "amber" | "red" | "neutral";
+export type WirelessEndpointCorrelationReason =
+  | "wired"
+  | "no-wireless-data"
+  | "no-meraki-match"
+  | "weak-rssi"
+  | "poor-rssi"
+  | "recent-failures"
+  | "healthy";
+
+/**
+ * Which join produced the matched MR — drives the "matched via BSSID" hint
+ * in the sidecar so users understand why this Android endpoint matched even
+ * though no client MAC was reported by TE.
+ */
+export type WirelessEndpointMatchMethod = "client-mac" | "bssid" | "none";
+
+export type WirelessEndpointCorrelation = {
+  agentId: string;
+  tone: WirelessEndpointCorrelationTone;
+  reason: WirelessEndpointCorrelationReason;
+  connectionType: "Wireless" | "Wired" | "Unknown";
+  ssid: string | null;
+  bssid: string | null;
+  rssiDbm: number | null;
+  signalQualityDb: number | null;
+  channel: number | null;
+  channelWidthMhz: number | null;
+  band: string | null;
+  wirelessMac: string | null;
+  matchedMeraki: {
+    serial: string;
+    name: string | null;
+    ssid: string | null;
+    lastSeen: string | null;
+  } | null;
+  matchMethod: WirelessEndpointMatchMethod;
+  recentFailureCount: number;
+};
+
 /** ThousandEyes Endpoint Agent (UUID) scoped to location by TE tag or ~80 km of site lat/lng. */
 export type TEEndpointAgentRow = {
   id: string;
@@ -183,6 +231,12 @@ export type TEEndpointAgentRow = {
   publicIP: string;
   lat: number | null;
   lng: number | null;
+  /**
+   * Pre-computed Wi-Fi correlation against the site's Meraki MR fleet. Absent
+   * for snapshots taken before the correlator feature shipped or when the
+   * site has no Meraki networkId / API key configured.
+   */
+  wirelessCorrelation?: WirelessEndpointCorrelation;
 };
 
 export type TETestRow = {
@@ -252,6 +306,81 @@ function parseTETestsByAgentFromRecord(rawByAgent: unknown): Record<string, TETe
     }
   }
   return Object.keys(m).length > 0 ? m : undefined;
+}
+
+const WIRELESS_TONES = new Set<WirelessEndpointCorrelationTone>(["green", "amber", "red", "neutral"]);
+const WIRELESS_REASONS = new Set<WirelessEndpointCorrelationReason>([
+  "wired",
+  "no-wireless-data",
+  "no-meraki-match",
+  "weak-rssi",
+  "poor-rssi",
+  "recent-failures",
+  "healthy",
+]);
+
+function parseWirelessCorrelations(raw: unknown): Record<string, WirelessEndpointCorrelation> {
+  if (!isRecord(raw)) return {};
+  const out: Record<string, WirelessEndpointCorrelation> = {};
+  for (const [agentId, entry] of Object.entries(raw)) {
+    if (!isRecord(entry)) continue;
+    const toneRaw = String(entry.tone ?? "neutral");
+    const tone: WirelessEndpointCorrelationTone = WIRELESS_TONES.has(
+      toneRaw as WirelessEndpointCorrelationTone,
+    )
+      ? (toneRaw as WirelessEndpointCorrelationTone)
+      : "neutral";
+    const reasonRaw = String(entry.reason ?? "no-wireless-data");
+    const reason: WirelessEndpointCorrelationReason = WIRELESS_REASONS.has(
+      reasonRaw as WirelessEndpointCorrelationReason,
+    )
+      ? (reasonRaw as WirelessEndpointCorrelationReason)
+      : "no-wireless-data";
+    const connTypeRaw = String(entry.connectionType ?? "Unknown");
+    const connectionType: WirelessEndpointCorrelation["connectionType"] =
+      connTypeRaw === "Wireless" || connTypeRaw === "Wired" ? connTypeRaw : "Unknown";
+
+    const matchedRaw = entry.matchedMeraki;
+    let matchedMeraki: WirelessEndpointCorrelation["matchedMeraki"] = null;
+    if (isRecord(matchedRaw) && typeof matchedRaw.serial === "string" && matchedRaw.serial) {
+      matchedMeraki = {
+        serial: matchedRaw.serial,
+        name: matchedRaw.name != null ? String(matchedRaw.name) : null,
+        ssid: matchedRaw.ssid != null ? String(matchedRaw.ssid) : null,
+        lastSeen: matchedRaw.lastSeen != null ? String(matchedRaw.lastSeen) : null,
+      };
+    }
+
+    const matchMethodRaw = String(entry.matchMethod ?? (matchedMeraki ? "client-mac" : "none"));
+    const matchMethod: WirelessEndpointMatchMethod =
+      matchMethodRaw === "client-mac" || matchMethodRaw === "bssid" || matchMethodRaw === "none"
+        ? matchMethodRaw
+        : matchedMeraki
+          ? "client-mac"
+          : "none";
+
+    out[agentId] = {
+      agentId,
+      tone,
+      reason,
+      connectionType,
+      ssid: entry.ssid != null ? String(entry.ssid) : null,
+      bssid: entry.bssid != null ? String(entry.bssid) : null,
+      rssiDbm: readFiniteNumber(entry.rssiDbm),
+      signalQualityDb: readFiniteNumber(entry.signalQualityDb),
+      channel: readFiniteNumber(entry.channel),
+      channelWidthMhz: readFiniteNumber(entry.channelWidthMhz),
+      band: entry.band != null ? String(entry.band) : null,
+      wirelessMac: entry.wirelessMac != null ? String(entry.wirelessMac) : null,
+      matchedMeraki,
+      matchMethod,
+      recentFailureCount:
+        typeof entry.recentFailureCount === "number" && Number.isFinite(entry.recentFailureCount)
+          ? Math.max(0, Math.floor(entry.recentFailureCount))
+          : 0,
+    };
+  }
+  return out;
 }
 
 export function parseMerakiSnapshot(payload: unknown): MerakiSnapshot | null {
@@ -393,6 +522,9 @@ export function parseTESnapshot(payload: unknown): TESnapshot | null {
   const agentToAgentTests = parseTETestRowsFromArray(payload.agentToAgentTests);
   const agentToAgentTestsByAgentId = parseTETestsByAgentFromRecord(payload.agentToAgentTestsByAgentId);
 
+  // Build the correlations index up-front so each row pickup is O(1).
+  const correlationsByAgentId = parseWirelessCorrelations(payload.wirelessCorrelations);
+
   const endpointAgents: TEEndpointAgentRow[] = [];
   const rawEp = payload.endpointAgents;
   if (Array.isArray(rawEp)) {
@@ -402,8 +534,9 @@ export function parseTESnapshot(payload: unknown): TESnapshot | null {
       }
       const la = readFiniteNumber(e.lat);
       const lo = readFiniteNumber(e.lng);
-      endpointAgents.push({
-        id: String(e.id ?? ""),
+      const id = String(e.id ?? "");
+      const row: TEEndpointAgentRow = {
+        id,
         hostname: String(e.hostname ?? e.computerName ?? e.name ?? "—"),
         computerName: String(e.computerName ?? ""),
         name: String(e.name ?? ""),
@@ -413,7 +546,12 @@ export function parseTESnapshot(payload: unknown): TESnapshot | null {
         publicIP: String(e.publicIP ?? ""),
         lat: la,
         lng: lo,
-      });
+      };
+      const corr = correlationsByAgentId[id];
+      if (corr) {
+        row.wirelessCorrelation = corr;
+      }
+      endpointAgents.push(row);
     }
   }
 
@@ -625,6 +763,12 @@ export function isMrMsMxCw(model: string): boolean {
 /** Meraki smart camera (MV*) — use Dashboard API `GET /devices/{serial}/camera/videoLink` for live / Vision URLs. */
 export function isMerakiCameraModel(model: string): boolean {
   return model.toUpperCase().startsWith("MV");
+}
+
+/** Wireless access point (MR* or CW* Catalyst Wi-Fi 6E/7). Used to gate the wireless connection-log link. */
+export function isMerakiWirelessApModel(model: string): boolean {
+  const p = model.toUpperCase();
+  return p.startsWith("MR") || p.startsWith("CW");
 }
 
 /** Wireless (MR*) or switch (MS*) — alert history in snapshots is keyed by device serial. */

@@ -114,6 +114,9 @@ export function AdminPage() {
     mapWeatherTemperatureUnit?: "F" | "C";
     mapWeatherWindSpeedUnit?: "mph" | "ms" | "kmh";
     mapWeatherPrecipitationUnit?: "mm" | "in";
+    wirelessConnLogDefaultWindow?: "1h" | "12h" | "24h" | "7d";
+    wirelessImpactRssiAmberDbm?: number;
+    wirelessImpactRssiRedDbm?: number;
   };
 
   return (
@@ -121,6 +124,10 @@ export function AdminPage() {
       <h1>Administration</h1>
       <p style={{ fontSize: "0.9rem", marginTop: "0.35rem" }}>
         <Link to="/admin/users">User admin</Link> — create users and assign roles (organization admins only).
+      </p>
+      <p style={{ fontSize: "0.9rem", marginTop: "0.35rem" }}>
+        <Link to="/admin/wireless-capacity">Wireless capacity</Link> — tune the "healthy design" client capacity
+        per Meraki AP model (drives the warning tone in the wireless health sidecar).
       </p>
       {taskMsg ? <p style={{ color: "var(--accent)" }}>{taskMsg}</p> : null}
 
@@ -236,6 +243,89 @@ export function AdminPage() {
           />
           Show map lens (requires Google Maps key + enable below)
         </label>
+        <div className="form-group" style={{ marginTop: "0.65rem" }}>
+          <label className="label">Wireless connection log — default window</label>
+          <select
+            className="input"
+            style={{ maxWidth: 240 }}
+            value={lenses.wirelessConnLogDefaultWindow ?? "12h"}
+            onChange={(e) =>
+              void patch({
+                lenses: {
+                  ...lenses,
+                  wirelessConnLogDefaultWindow: e.target.value as "1h" | "12h" | "24h" | "7d",
+                },
+              })
+            }
+          >
+            <option value="1h">Last hour</option>
+            <option value="12h">Last 12 hours (default)</option>
+            <option value="24h">Last 24 hours</option>
+            <option value="7d">Last 7 days</option>
+          </select>
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: "var(--muted)", lineHeight: 1.45 }}>
+            Drives the initial time window shown in the per-AP <strong>View log</strong> sidecar
+            (Site detail → Equipment table → MR row → Live column). Users can still flip windows
+            in the sidecar; this just controls the default the sidecar opens to.
+          </p>
+        </div>
+
+        <div className="form-group" style={{ marginTop: "0.65rem" }}>
+          <label className="label">Wi-Fi impact thresholds (TE Endpoint Agent ↔ Meraki MR)</label>
+          <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div style={{ flex: "0 0 200px" }}>
+              <label style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                Amber threshold (dBm)
+              </label>
+              <input
+                type="number"
+                className="input"
+                min={-100}
+                max={-20}
+                step={1}
+                defaultValue={lenses.wirelessImpactRssiAmberDbm ?? -65}
+                key={`amber-${lenses.wirelessImpactRssiAmberDbm ?? -65}`}
+                onBlur={(e) => {
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v) && v >= -100 && v <= -20) {
+                    void patch({
+                      lenses: { ...lenses, wirelessImpactRssiAmberDbm: v },
+                    });
+                  }
+                }}
+              />
+            </div>
+            <div style={{ flex: "0 0 200px" }}>
+              <label style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
+                Red threshold (dBm)
+              </label>
+              <input
+                type="number"
+                className="input"
+                min={-100}
+                max={-20}
+                step={1}
+                defaultValue={lenses.wirelessImpactRssiRedDbm ?? -75}
+                key={`red-${lenses.wirelessImpactRssiRedDbm ?? -75}`}
+                onBlur={(e) => {
+                  const v = Number(e.target.value);
+                  if (Number.isFinite(v) && v >= -100 && v <= -20) {
+                    void patch({
+                      lenses: { ...lenses, wirelessImpactRssiRedDbm: v },
+                    });
+                  }
+                }}
+              />
+            </div>
+          </div>
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: "var(--muted)", lineHeight: 1.45 }}>
+            Drives the Wi-Fi tone pill on each ThousandEyes Endpoint Agent row at a site. Endpoints
+            on Wi-Fi with RSSI worse than the amber threshold show amber; worse than the red
+            threshold show red. Recent association failures on the matched MR also push the tone
+            toward red. Wired endpoints and endpoints with no matching MR show as neutral.
+            Defaults: amber <strong>-65 dBm</strong>, red <strong>-75 dBm</strong>.
+          </p>
+        </div>
         <p style={{ fontSize: "0.8rem", color: "var(--muted)", margin: "0.75rem 0 0", lineHeight: 1.45 }}>
           <strong>Map weather overlay:</strong> Uses <strong>OpenWeatherMap.org</strong> map tiles (precipitation,
           clouds, wind, temperature). The Google Maps JavaScript API does not ship a weather raster layer; add an

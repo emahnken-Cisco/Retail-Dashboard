@@ -139,6 +139,39 @@ Stored in `AdminSettings`: `retentionDays` (default 90), `pollIntervalMerakiSec`
 `pollIntervalTESec`, `heartbeatIntervalSec`, `sessionIdleTimeoutMin`, and **lenses** JSON
 (widgets, map, card columns). Only **Organization Admins** can change these in the UI.
 
+## Wireless & DHCP observability caches (1.2.0+)
+
+The DHCP / wireless sidecars and the per-MR connection log all read through
+short-TTL in-process caches so repeatedly opening a sidecar does not hammer
+Meraki. Tune the TTLs only if you have a reason — defaults are conservative.
+
+| Variable | Description |
+|----------|-------------|
+| `WIRELESS_HEALTH_CACHE_TTL_MS` | TTL for the per-site wireless health payload (channel utilization, RSSI, airtime, noise, capacity). Default `60000` (60 s). |
+| `WIRELESS_SSID_LOAD_CACHE_TTL_MS` | TTL for per-SSID load shares. Default `60000`. |
+| `WIRELESS_SSID_LOAD_BULK_THRESHOLD` | Site size (number of MRs × enabled SSIDs) above which the wireless sidecar switches to **lazy per-row** loading instead of a single bulk Meraki fan-out. Default `24`. |
+| `WIRELESS_CONN_LOG_CACHE_TTL_MS` | TTL for the per-MR connection log slide-out. Default `30000`. |
+
+## Lenses (1.2.0+)
+
+Stored inside `AdminSettings.lenses`, editable under **Admin → Lenses & data**:
+
+| Lens | Description |
+|------|-------------|
+| `wirelessConnLogDefaultWindow` | `1h` / `12h` / `24h` / `7d` — initial window for the Wireless Connection Log sidecar. |
+| `wirelessImpactRssiAmberDbm` | Numeric dBm threshold below which the Wi-Fi correlation tone goes **amber** for a matched endpoint. Clamped on the server to `[-100, -20]`. |
+| `wirelessImpactRssiRedDbm` | Numeric dBm threshold below which the Wi-Fi correlation tone goes **red** for a matched endpoint. Clamped on the server to `[-100, -20]`. |
+
+The Wi-Fi correlation also requires:
+
+- A configured **Meraki API key** with `wireless:configure:read` (or
+  equivalent) on the org. The org-wide
+  `/wireless/ssids/statuses/byDevice` call powers the BSSID-based MR
+  fallback used for endpoints whose client MAC TE does not expose
+  (Android / iOS / managed-MAC).
+- `organizationId` and `networkId` present in the latest Meraki snapshot
+  for the site — populated automatically by the Meraki ingest job.
+
 ## GitHub hygiene
 
 - Upstream source: [github.com/emahnken-Cisco/Retail-Dashboard](https://github.com/emahnken-Cisco/Retail-Dashboard) (`git clone https://github.com/emahnken-Cisco/Retail-Dashboard.git`).

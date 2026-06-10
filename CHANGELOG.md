@@ -1,5 +1,119 @@
 # Changelog
 
+## 1.2.0 — 2026-06-10
+
+DHCP / wireless observability release. Adds interactive sidecars for DHCP and
+wireless health, per-AP connection-log slide-outs, an admin-managed model →
+client-capacity matrix, and a TE Endpoint Agent ↔ Meraki MR correlation that
+matches endpoints to their AP via client MAC or BSSID and flags poor RSSI
+and association / DHCP failures as **impacted on Wi-Fi**.
+
+### Features
+
+- **DHCP Health sidecar** (`apps/web/src/components/DhcpHealthSidecar.tsx`,
+  `apps/server/src/lib/dhcpScopeHealthCache.ts`,
+  `apps/server/src/routes/dashboard.ts`): per-scope gauges (utilization, lease
+  duration), plus DNS servers and domain name handed out. Sliding panel on the
+  site card "DHCP" pill.
+- **Wireless Health sidecar** (`apps/web/src/components/WirelessHealthSidecar.tsx`,
+  `apps/server/src/lib/wirelessHealthCache.ts`): per-AP semi-gauges for
+  client count vs configured capacity, average RSSI (Tx/Rx), channel,
+  power level, channel-utilization (2.4 / 5 / 6 GHz, with fallback for
+  RF-profile-managed APs that report nulls on `radio/settings`), airtime
+  and noise. Per-SSID load shares use a hybrid loading strategy
+  (`apps/server/src/lib/wirelessSsidLoadCache.ts`): a bulk load for
+  small sites, lazy per-row loading for sites above
+  `WIRELESS_SSID_LOAD_BULK_THRESHOLD`.
+- **Wireless Connection Log sidecar**
+  (`apps/web/src/components/WirelessConnectionLogSidecar.tsx`,
+  `apps/server/src/lib/wirelessConnectionLogCache.ts`): per-MR association /
+  auth / DHCP event log accessed via the **View log** button under the
+  Live column. Default window configurable through the
+  `wirelessConnLogDefaultWindow` lens (1 h, 12 h, 24 h, 7 d).
+- **Admin Wireless Capacity page**
+  (`apps/web/src/pages/AdminWirelessCapacityPage.tsx`,
+  `apps/server/src/routes/adminWirelessCapacity.ts`): organization admins
+  can add, edit, or delete model → max-clients rows in
+  `MerakiModelClientCapacity` (new Prisma model + migration). Cross-site
+  RBAC checks ensure non-org-admins cannot mutate or read non-public rows.
+- **TE Endpoint Agent ↔ Meraki MR Wi-Fi correlation**
+  (`apps/server/src/lib/wirelessCorrelator.ts`,
+  `apps/server/src/jobs/thousandEyesIngest.ts`,
+  `apps/web/src/components/EndpointAgentSidecar.tsx`,
+  `apps/web/src/components/SiteSummaryTables.tsx`):
+  - TE Endpoint Agents are matched to a Meraki MR first by client MAC
+    (`/networks/{id}/clients`) and, when that fails, by **BSSID** using the
+    org-wide `/organizations/{id}/wireless/ssids/statuses/byDevice` listing.
+    The BSSID fallback is what lets Android / iOS / managed-MAC fleets
+    correlate even when TE never exposes the client MAC.
+  - Each endpoint snapshot carries a pre-computed `tone`
+    (green / amber / red / neutral) driven by RSSI thresholds plus recent
+    association / auth / DHCP failures on the matched MR.
+  - Endpoint table gains a **Wi-Fi** column with a colored pill
+    (`<SSID> · <MR name> · <RSSI dBm>`) and an "Open AP log →" shortcut
+    that opens the matched MR's connection log pre-scoped to the right
+    serial.
+  - Endpoint sidecar grows a **Wi-Fi correlation (Meraki MR)** section
+    with connection details, an "Access point" row, a "via BSSID" badge
+    when the BSSID fallback fired, and a recent-event timeline.
+- **Wireless correlation debug endpoint**: `GET /api/dashboard/sites/:siteId/
+  endpoint-agents/:agentId/wireless-debug` (Organization Admin only)
+  dumps the raw TE agent payload, the snapshot extracted by the
+  correlator, the persisted slim row, and the persisted correlation so
+  operators can pinpoint why a specific endpoint is not matching.
+
+### Admin lenses
+
+- `wirelessConnLogDefaultWindow` (`1h` / `12h` / `24h` / `7d`) — default
+  window for the Wireless Connection Log sidecar.
+- `wirelessImpactRssiAmberDbm` / `wirelessImpactRssiRedDbm` — RSSI
+  thresholds that drive the Wi-Fi correlation tone. Numeric, clamped on
+  the server (`apps/server/src/routes/admin.ts`).
+
+### Configuration — new environment variables
+
+- `WIRELESS_HEALTH_CACHE_TTL_MS` — TTL for the wireless health cache
+  (default 60 s).
+- `WIRELESS_SSID_LOAD_CACHE_TTL_MS` — TTL for the per-SSID load-share cache.
+- `WIRELESS_SSID_LOAD_BULK_THRESHOLD` — site size above which the SSID
+  load sidecar falls back to lazy per-row loading instead of a single
+  bulk fetch (defends Meraki rate limits on large sites).
+- `WIRELESS_CONN_LOG_CACHE_TTL_MS` — TTL for the connection-log cache.
+
+### Database
+
+- New `MerakiModelClientCapacity` model + migration (admin-managed AP
+  client capacity).
+
+### Security & hardening
+
+- Cross-pillar request authorization enforced on all new admin endpoints
+  (`Admin Wireless Capacity` writes, wireless-debug endpoint, Wi-Fi
+  correlation routes) via the existing `requireOrgAdmin` pre-handler.
+- All new caches are in-process and short-TTL; serial → site bindings
+  validated on every request so a user with one site cannot read another
+  site's wireless / DHCP / log data via crafted query parameters.
+- New scheduled / on-demand outbound calls are routed through
+  `tracedFetch`; they appear in the API debug trace buffer with the
+  expected provider tag.
+
+### Build
+
+- **TS2307 on `import "./index.css"`** fixed by adding the standard Vite
+  ambient-types reference at `apps/web/src/vite-env.d.ts`
+  (`/// <reference types="vite/client" />`). This declares the side-effect
+  CSS / SVG / `?url` / `?raw` / `?worker` import modules and
+  `import.meta.env` types — required because `tsconfig.json` enables
+  `noUncheckedSideEffectImports`.
+
+### Documentation
+
+- Refreshed [README.md](README.md), [docs/USER_GUIDE.md](docs/USER_GUIDE.md),
+  and [docs/CONFIGURATION.md](docs/CONFIGURATION.md) for the new sidecars,
+  admin pages, lenses, and env vars.
+
+---
+
 ## 1.1.0 — 2026-04-17
 
 A full security hardening pass across critical, high, and medium tiers, plus the bulk

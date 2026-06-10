@@ -12,6 +12,7 @@ import { TagsPage } from "./pages/TagsPage.js";
 import { CircuitsPage } from "./pages/CircuitsPage.js";
 import { ReportingPage } from "./pages/ReportingPage.js";
 import { AdminUsersPage } from "./pages/AdminUsersPage.js";
+import { AdminWirelessCapacityPage } from "./pages/AdminWirelessCapacityPage.js";
 import type { UserRole } from "./lib/roles.js";
 
 function Private({ children }: { children: React.ReactNode }) {
@@ -75,6 +76,14 @@ export default function App() {
             element={
               <RoleRoute roles={["ORG_ADMIN"]}>
                 <CredentialsPage />
+              </RoleRoute>
+            }
+          />
+          <Route
+            path="admin/wireless-capacity"
+            element={
+              <RoleRoute roles={["ORG_ADMIN"]}>
+                <AdminWirelessCapacityPage />
               </RoleRoute>
             }
           />

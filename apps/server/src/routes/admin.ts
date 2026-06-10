@@ -4,6 +4,7 @@ import { z } from "zod";
 import { prisma } from "../lib/prisma.js";
 import { getOpenWeatherQuotaSnapshot } from "../lib/openWeatherQuota.js";
 import { getAdminSettings } from "../lib/settings.js";
+import { requireAuth } from "./auth.js";
 import { requireOrgAdmin } from "../lib/rbac.js";
 import { runMerakiIngest } from "../jobs/merakiIngest.js";
 import { runThousandEyesIngest } from "../jobs/thousandEyesIngest.js";
@@ -29,6 +30,27 @@ const lensesSchema = z
     mapWeatherWindSpeedUnit: z.enum(["mph", "ms", "kmh"]).optional(),
     /** Precipitation overlay legend: in (default) or mm (matches tile scale). */
     mapWeatherPrecipitationUnit: z.enum(["mm", "in"]).optional(),
+    /**
+     * Default time window for the per-AP wireless connection-log sidecar.
+     * Stored as a short slug so the UI and server can map it to a fixed
+     * `timespan` query param against the Meraki events API. Users can
+     * still override per-open from the sidecar's toggle.
+     */
+    wirelessConnLogDefaultWindow: z.enum(["1h", "12h", "24h", "7d"]).optional(),
+    /**
+     * RSSI threshold (dBm) at which a ThousandEyes Endpoint Agent's
+     * Wi-Fi pill flips from green → amber on the dashboard endpoints
+     * table. Stricter (lower / more-negative) values flag more endpoints
+     * as borderline; defaults to -65 which matches common Cisco Wi-Fi
+     * engineering guidance for healthy 5 GHz coverage.
+     */
+    wirelessImpactRssiAmberDbm: z.number().min(-100).max(-20).optional(),
+    /**
+     * RSSI threshold (dBm) at which the pill flips amber → red ("impacted").
+     * Must be ≤ the amber threshold; the correlator swaps them safely if a
+     * reversed pair sneaks through. Defaults to -75 dBm.
+     */
+    wirelessImpactRssiRedDbm: z.number().min(-100).max(-20).optional(),
   })
   .optional();
 
@@ -189,6 +211,162 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
           finishedAt: r.finishedAt?.toISOString() ?? null,
         })),
       };
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // Wireless AP "healthy design" client capacity, per Meraki model.
+  // Read: any authenticated user (the wireless health route needs it too).
+  // Write: ORG_ADMIN only; capacity change is recorded as a structured log
+  // entry (the repo has no audit-log model — this is the agreed v1 trail).
+  // -------------------------------------------------------------------------
+
+  app.get(
+    "/api/admin/wireless/model-capacity",
+    { preHandler: requireAuth },
+    async () => {
+      const rows = await prisma.merakiModelClientCapacity.findMany({
+        orderBy: { model: "asc" },
+      });
+      return {
+        models: rows.map((r) => ({
+          model: r.model,
+          capacity: r.capacity,
+          note: r.note,
+          updatedById: r.updatedById,
+          updatedByEmail: r.updatedByEmail,
+          updatedAt: r.updatedAt.toISOString(),
+        })),
+      };
+    },
+  );
+
+  const modelCapacityUpdateSchema = z.object({
+    capacity: z.number().int().min(1).max(2000),
+    note: z.string().max(280).nullable().optional(),
+  });
+
+  app.put(
+    "/api/admin/wireless/model-capacity/:model",
+    { preHandler: requireOrgAdmin },
+    async (req, reply) => {
+      const { model: rawModel } = req.params as { model: string };
+      const model = rawModel?.trim().toUpperCase() ?? "";
+      // Allow letters, digits, and dash so future Catalyst SKUs (e.g. CW9176D1) work.
+      // Reject anything else so an attacker can't smuggle a path traversal as the PK.
+      if (!model || !/^[A-Z0-9-]{2,32}$/.test(model)) {
+        return reply.code(400).send({ error: "Invalid model name" });
+      }
+
+      const parsed = modelCapacityUpdateSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return reply.code(400).send({ error: "Invalid body", details: parsed.error.flatten() });
+      }
+
+      const userId = req.session?.userId as string | undefined;
+      if (!userId) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+      const editor = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (!editor) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+
+      const note = parsed.data.note === undefined ? undefined : parsed.data.note;
+      const row = await prisma.merakiModelClientCapacity.upsert({
+        where: { model },
+        update: {
+          capacity: parsed.data.capacity,
+          ...(note !== undefined ? { note } : {}),
+          updatedById: userId,
+          updatedByEmail: editor.email,
+        },
+        create: {
+          model,
+          capacity: parsed.data.capacity,
+          note: note ?? null,
+          updatedById: userId,
+          updatedByEmail: editor.email,
+        },
+      });
+
+      req.log.info(
+        {
+          audit: "wireless.modelCapacity.updated",
+          model: row.model,
+          capacity: row.capacity,
+          updatedById: row.updatedById,
+          updatedByEmail: row.updatedByEmail,
+        },
+        "wireless model client capacity updated",
+      );
+
+      return {
+        model: row.model,
+        capacity: row.capacity,
+        note: row.note,
+        updatedById: row.updatedById,
+        updatedByEmail: row.updatedByEmail,
+        updatedAt: row.updatedAt.toISOString(),
+      };
+    },
+  );
+
+  /**
+   * Delete a model capacity row. Used when an AP model is retired from the
+   * fleet (e.g. MR33 EOL'd). The wireless sidecar falls back to a default
+   * capacity of 40 for any model not in this table, so deletion is non-fatal
+   * but the gauge tone becomes less accurate for that model.
+   *
+   * Gated to ORG_ADMIN; emits an audit log entry; rejects malformed model
+   * names with the same allow-list as PUT to prevent path traversal via the
+   * primary key.
+   */
+  app.delete(
+    "/api/admin/wireless/model-capacity/:model",
+    { preHandler: requireOrgAdmin },
+    async (req, reply) => {
+      const { model: rawModel } = req.params as { model: string };
+      const model = rawModel?.trim().toUpperCase() ?? "";
+      if (!model || !/^[A-Z0-9-]{2,32}$/.test(model)) {
+        return reply.code(400).send({ error: "Invalid model name" });
+      }
+
+      const userId = req.session?.userId as string | undefined;
+      if (!userId) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+      const editor = await prisma.user.findUnique({
+        where: { id: userId },
+        select: { email: true },
+      });
+      if (!editor) {
+        return reply.code(401).send({ error: "Unauthorized" });
+      }
+
+      // Confirm existence so we can emit a useful 404 instead of swallowing.
+      const existing = await prisma.merakiModelClientCapacity.findUnique({ where: { model } });
+      if (!existing) {
+        return reply.code(404).send({ error: `Model ${model} not found` });
+      }
+
+      await prisma.merakiModelClientCapacity.delete({ where: { model } });
+
+      req.log.info(
+        {
+          audit: "wireless.modelCapacity.deleted",
+          model,
+          priorCapacity: existing.capacity,
+          actorId: userId,
+          actorEmail: editor.email,
+        },
+        "wireless model client capacity deleted",
+      );
+
+      return reply.code(204).send();
     },
   );
 }

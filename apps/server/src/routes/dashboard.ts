@@ -4,6 +4,11 @@ import { getAdminSettings } from "../lib/settings.js";
 import { resolvedLocalContactFromSite } from "../lib/resolvedCircuitContact.js";
 import { decryptSecretForHttp } from "../lib/cryptoVault.js";
 import { buildEndpointAgentDashboardDetail } from "../lib/endpointAgentDetail.js";
+import { getEndpointAgentExpanded } from "../lib/thousandEyesClient.js";
+import {
+  snapshotEndpointWireless,
+  type WirelessEndpointCorrelation,
+} from "../lib/wirelessCorrelator.js";
 import { replyIfPrismaSchemaMismatch } from "../lib/prismaErrors.js";
 import {
   OPENWEATHER_QUOTA_EXCEEDED_TILE,
@@ -13,11 +18,24 @@ import {
 import { tracedFetch } from "../lib/outboundTrace.js";
 import { merakiGeoFromSnapshotPayload, resolveSiteCoordinates } from "../lib/siteCoordinates.js";
 import { requireAuth } from "./auth.js";
+import { requireOrgAdmin } from "../lib/rbac.js";
 import { getMerakiApiKey } from "../lib/merakiVault.js";
 import {
+  getApplianceDhcpSubnets,
   getDeviceCameraVideoLink,
   getDeviceLossAndLatencyHistory,
+  getDeviceWirelessConnectionStats,
+  getDeviceWirelessRadioSettings,
   getNetworkApplianceUplinksUsageHistory,
+  getNetworkApplianceVlans,
+  getNetworkChannelUtilizationHistory,
+  getNetworkEvents,
+  getNetworkWirelessClientCountHistory,
+  getNetworkWirelessSsids,
+  getNetworkWirelessUsageHistory,
+  type MerakiApplianceVlanRow,
+  type MerakiNetworkChannelUtilizationRow,
+  type MerakiNetworkEvent,
 } from "../lib/merakiClient.js";
 import { fetchEnterpriseTestLatencyLossSeries } from "../lib/teEnterpriseTestMetrics.js";
 import {
@@ -26,9 +44,85 @@ import {
   teEnterpriseMetricsCacheKey,
   type TeEnterpriseMetricsCacheEntry,
 } from "../lib/teEnterpriseTestMetricsCache.js";
+import {
+  dhcpScopeHealthCacheKey,
+  getDhcpScopeHealthFromCache,
+  setDhcpScopeHealthCache,
+  type DhcpScopeEntry,
+  type DhcpScopeHealthCacheEntry,
+} from "../lib/dhcpScopeHealthCache.js";
+import {
+  getWirelessHealthFromCache,
+  setWirelessHealthCache,
+  wirelessHealthCacheKey,
+  type WirelessApBandEntry,
+  type WirelessApEntry,
+  type WirelessBand,
+  type WirelessChannelEntry,
+  type WirelessHealthCacheEntry,
+  type WirelessSsidEntry,
+} from "../lib/wirelessHealthCache.js";
+import {
+  getWirelessSsidLoadEntryAgeMs,
+  getWirelessSsidLoadFromCache,
+  setWirelessSsidLoadCache,
+  wirelessSsidLoadCacheKey,
+  type WirelessSsidLoadEntry,
+} from "../lib/wirelessSsidLoadCache.js";
+import {
+  WIRELESS_CONNECTION_LOG_WINDOW_SECONDS,
+  getWirelessConnectionLogFromCache,
+  setWirelessConnectionLogCache,
+  wirelessConnectionLogCacheKey,
+  type WirelessConnectionLogEntry,
+  type WirelessConnectionLogWindow,
+} from "../lib/wirelessConnectionLogCache.js";
 
 function isPayloadRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Slim row surfaced to the endpoint sidecar — one Meraki wireless event. */
+type WirelessClientEventRow = {
+  occurredAt: string;
+  type: string;
+  description: string | null;
+  deviceSerial: string | null;
+  deviceName: string | null;
+  ssidName: string | null;
+  ssidNumber: number | null;
+};
+
+/**
+ * Pull the persisted wireless correlation for a given endpoint agent out of
+ * a TE snapshot payload. Returns `null` when the snapshot pre-dates the
+ * correlator feature or the agent has no entry.
+ */
+function pickAgentCorrelation(
+  payload: Record<string, unknown>,
+  agentId: string,
+): WirelessEndpointCorrelation | null {
+  const raw = payload.wirelessCorrelations;
+  if (!isPayloadRecord(raw)) return null;
+  const entry = (raw as Record<string, unknown>)[agentId];
+  if (!isPayloadRecord(entry)) return null;
+  // We trust the ingest job's shape but defensively coerce known fields so
+  // a stale snapshot with missing keys can't crash the sidecar render.
+  return entry as unknown as WirelessEndpointCorrelation;
+}
+
+/** Resolve the Meraki networkId from a snapshot payload (TE or Meraki). */
+function networkIdFromMerakiSnapshot(payload: unknown): string | null {
+  if (!isPayloadRecord(payload)) return null;
+  const id = payload.networkId;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+/** Convert a 12-char hex MAC into the `aa:bb:cc:dd:ee:ff` form Meraki accepts. */
+function colonizeMac(mac: string): string {
+  const cleaned = mac.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+  if (cleaned.length !== 12) return mac;
+  return cleaned.match(/.{1,2}/g)!.join(":");
 }
 
 type SiteWeatherApiPayload = {
@@ -601,10 +695,133 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       try {
         const admin = await getAdminSettings();
         const detail = await buildEndpointAgentDashboardDetail(token, agentId, admin.thousandEyesAid);
-        return detail;
+
+        // Attach the pre-computed wireless correlation for this agent (set
+        // during TE ingest) plus a recent slice of Meraki wireless events
+        // for the matched client MAC. The events call is best-effort and
+        // tightly scoped (1h window, clientMac filter, 50 rows max) so it
+        // adds at most one Meraki call per sidecar open.
+        const correlation = pickAgentCorrelation(payload, agentId);
+        let merakiClientEvents: WirelessClientEventRow[] = [];
+        let eventsNote: string | null = null;
+        if (correlation?.matchedMeraki?.serial && correlation.wirelessMac) {
+          const netId = networkIdFromMerakiSnapshot(payload);
+          const merakiSnap = await prisma.metricSnapshot.findFirst({
+            where: { siteId, source: "meraki" },
+            orderBy: { capturedAt: "desc" },
+            select: { payload: true },
+          });
+          const resolvedNetId = netId ?? networkIdFromMerakiSnapshot(merakiSnap?.payload ?? null);
+          const apiKey = await getMerakiApiKey();
+          if (apiKey && resolvedNetId) {
+            try {
+              // `clientMac` filter expects the address with colons; Meraki
+              // does the case-insensitive match internally so we don't have
+              // to upper-case.
+              const macColon = colonizeMac(correlation.wirelessMac);
+              const page = await getNetworkEvents(apiKey, resolvedNetId, {
+                productType: "wireless",
+                clientMac: macColon,
+                perPage: 50,
+              });
+              merakiClientEvents = (page.events ?? [])
+                .filter((ev) => {
+                  const ts = ev.occurredAt ? Date.parse(ev.occurredAt) : NaN;
+                  if (Number.isNaN(ts)) return false;
+                  return Date.now() - ts <= 60 * 60 * 1000;
+                })
+                .map((ev) => ({
+                  occurredAt: String(ev.occurredAt),
+                  type: String(ev.type ?? "—"),
+                  description: ev.description ?? null,
+                  deviceSerial: ev.deviceSerial ?? null,
+                  deviceName: ev.deviceName ?? null,
+                  ssidName: ev.ssidName ?? null,
+                  ssidNumber: ev.ssidNumber ?? null,
+                }));
+            } catch (e) {
+              eventsNote = e instanceof Error ? e.message.slice(0, 240) : String(e).slice(0, 240);
+            }
+          } else if (!apiKey) {
+            eventsNote = "Meraki API key not configured";
+          }
+        }
+
+        return {
+          ...detail,
+          wirelessCorrelation: correlation,
+          merakiClientEvents,
+          merakiClientEventsNote: eventsNote,
+        };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         req.log.warn({ err: e, siteId, agentId }, "endpoint agent detail failed");
+        return reply.code(502).send({ error: msg.slice(0, 600) });
+      }
+    },
+  );
+
+  /**
+   * Org-admin only. Dumps the raw TE Endpoint Agent expanded payload plus
+   * the slim wireless snapshot the correlator extracted (and the persisted
+   * snapshot row) so you can pinpoint why an endpoint did or didn't match a
+   * Meraki MR. Intended for debugging only — no UI consumes it.
+   */
+  app.get(
+    "/api/dashboard/sites/:siteId/endpoint-agents/:agentId/wireless-debug",
+    { preHandler: requireOrgAdmin },
+    async (req, reply) => {
+      const { siteId, agentId } = req.params as { siteId: string; agentId: string };
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "thousandeyes" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap || !isPayloadRecord(snap.payload)) {
+        return reply.code(404).send({ error: "No ThousandEyes snapshot for this site" });
+      }
+      const payload = snap.payload;
+      const epList = Array.isArray(payload.endpointAgents) ? payload.endpointAgents : [];
+      const persistedAgent = epList.find(
+        (row) => isPayloadRecord(row) && String(row.id ?? "") === agentId,
+      );
+      if (!persistedAgent) {
+        return reply.code(404).send({ error: "Endpoint not in latest snapshot" });
+      }
+
+      const credRow = await prisma.credentialVault.findUnique({
+        where: { provider: "thousandeyes" },
+      });
+      if (!credRow) {
+        return reply.code(503).send({ error: "ThousandEyes token not configured" });
+      }
+      const token = decryptSecretForHttp(
+        credRow.encryptedValue,
+        credRow.iv,
+        credRow.authTag,
+        "ThousandEyes token",
+      );
+      const admin = await getAdminSettings();
+      try {
+        const liveAgent = await getEndpointAgentExpanded(
+          token,
+          agentId,
+          admin.thousandEyesAid?.trim() ? { aid: admin.thousandEyesAid.trim() } : undefined,
+        );
+        const liveSnapshot = snapshotEndpointWireless(liveAgent);
+        return {
+          agentId,
+          snapshotCapturedAt: snap.capturedAt.toISOString(),
+          persistedSlimAgent: persistedAgent,
+          persistedCorrelation: pickAgentCorrelation(payload, agentId),
+          liveRawAgent: liveAgent,
+          liveExtractedSnapshot: liveSnapshot,
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         return reply.code(502).send({ error: msg.slice(0, 600) });
       }
     },
@@ -720,6 +937,43 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       if (ser != null && String(ser).trim() !== "") {
         out.add(String(ser).trim());
       }
+    }
+    return out;
+  }
+
+  /** Pull `{ serial, model, name }` for every wireless-capable device (MR / CW / wireless-MX) in the snapshot. */
+  function wirelessDevicesFromMerakiSnapshotPayload(
+    payload: unknown,
+  ): Array<{ serial: string; model: string; name: string }> {
+    const out: Array<{ serial: string; model: string; name: string }> = [];
+    if (!isPayloadRecord(payload)) {
+      return out;
+    }
+    const devices = payload.devices;
+    if (!Array.isArray(devices)) {
+      return out;
+    }
+    const seen = new Set<string>();
+    for (const d of devices) {
+      if (!isPayloadRecord(d)) {
+        continue;
+      }
+      const model = typeof d.model === "string" ? d.model.trim() : "";
+      // MR (Wave 1/2/Wi-Fi 6), CW (Catalyst Wi-Fi 6E), or wireless-capable MX (`MX<n>W`).
+      const isWireless = /^MR\d/.test(model) || /^CW\d/.test(model) || /^MX\d+W(-|$)/.test(model);
+      if (!isWireless) {
+        continue;
+      }
+      const serial = typeof d.serial === "string" ? d.serial.trim() : "";
+      if (!serial || seen.has(serial)) {
+        continue;
+      }
+      seen.add(serial);
+      out.push({
+        serial,
+        model,
+        name: typeof d.name === "string" && d.name.trim() ? d.name.trim() : serial,
+      });
     }
     return out;
   }
@@ -985,4 +1239,873 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ===========================================================================
+  // DHCP scope health (per-VLAN usage + scope options) — sidecar API.
+  // Pulls live from Meraki `/devices/{serial}/appliance/dhcp/subnets` and
+  // `/networks/{id}/appliance/vlans`, joined per VLAN, with a 60s TTL cache.
+  // ===========================================================================
+
+  /** Normalize Meraki's free-form `dhcpHandling` string into the three labels the UI cards on. */
+  function normalizeDhcpMode(raw: string | undefined): string {
+    const v = (raw ?? "").toLowerCase();
+    if (v.includes("relay")) {
+      return "Relay DHCP";
+    }
+    if (v.includes("do not")) {
+      return "Disabled";
+    }
+    return "Run DHCP server";
+  }
+
+  /**
+   * Resolve the DNS server list Meraki will hand to DHCP clients on a VLAN.
+   * The API field is overloaded across firmware versions:
+   *   - Known preset keyword (`upstream_dns`, `google_dns`, `opendns`).
+   *   - "custom" + a separate `dnsCustomNameservers` field (legacy).
+   *   - The literal IP list, newline / comma / whitespace-separated (current).
+   * We probe in that order and fall back to "upstream" only when nothing matched.
+   */
+  function resolveDhcpDns(vlan: MerakiApplianceVlanRow): string[] {
+    const raw = (vlan.dnsNameservers ?? "").trim();
+    const presetKey = raw.toLowerCase();
+
+    if (presetKey === "google_dns" || presetKey === "google") {
+      return ["8.8.8.8", "8.8.4.4"];
+    }
+    if (presetKey === "opendns") {
+      return ["208.67.222.222", "208.67.220.220"];
+    }
+    if (presetKey === "upstream_dns" || presetKey === "upstream" || presetKey === "") {
+      return ["upstream"];
+    }
+
+    // Legacy shape: dnsNameservers === "custom" + dnsCustomNameservers list.
+    if (presetKey === "custom") {
+      const cn = vlan.dnsCustomNameservers;
+      const arr = Array.isArray(cn) ? cn : typeof cn === "string" ? cn.split(/[\s,]+/) : [];
+      const list = arr.map((s) => String(s).trim()).filter(Boolean);
+      return list.length > 0 ? list : ["—"];
+    }
+
+    // Current shape: dnsNameservers IS the literal IP list (one per line, or comma-separated).
+    const ips = raw
+      .split(/[\s,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+    return ips.length > 0 ? ips : ["upstream"];
+  }
+
+  /** Map a DHCP option code to its well-known short name for the UI pill. */
+  function dhcpOptionLabel(code: number): string {
+    switch (code) {
+      case 15:
+        return "domain-name";
+      case 42:
+        return "ntp-servers";
+      case 43:
+        return "vendor-specific";
+      case 66:
+        return "tftp-server";
+      case 119:
+        return "domain-search";
+      case 121:
+        return "classless-static-route";
+      case 150:
+        return "tftp-server-list";
+      default:
+        return `opt-${code}`;
+    }
+  }
+
+  /**
+   * Per-VLAN DHCP scope usage and configuration for the latest snapshot's MX appliance(s).
+   * Aggregates `/devices/{serial}/appliance/dhcp/subnets` (usage) with `/networks/{id}/appliance/vlans`
+   * (mode, lease, DNS, options) and returns a single payload the sidecar can render directly.
+   */
+  app.get(
+    "/api/dashboard/sites/:siteId/dhcp-scope-health",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { siteId } = req.params as { siteId: string };
+
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      if (!site.merakiNetworkId?.trim()) {
+        return reply.code(400).send({ error: "Site has no Meraki network linked" });
+      }
+
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "meraki" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap?.payload) {
+        return reply.code(404).send({ error: "No Meraki snapshot for this site" });
+      }
+      const applianceSerials = [...applianceSerialsFromMerakiSnapshotPayload(snap.payload)];
+      if (applianceSerials.length === 0) {
+        return reply
+          .code(404)
+          .send({ error: "Latest Meraki snapshot has no MX appliance to query DHCP scopes for." });
+      }
+
+      const cacheKey = dhcpScopeHealthCacheKey(siteId);
+      const cached = getDhcpScopeHealthFromCache(cacheKey);
+      if (cached) {
+        void reply.header("X-DHCP-Scope-Health-Cache", "HIT");
+        return cached;
+      }
+
+      const apiKey = await getMerakiApiKey();
+      if (!apiKey) {
+        return reply.code(503).send({ error: "Meraki API key not configured" });
+      }
+      const networkId = site.merakiNetworkId.trim();
+
+      // Pull VLAN config once for the network, then walk every MX in the snapshot for
+      // its per-subnet usage. We tolerate per-appliance subnet errors (firmware / model
+      // variations can 404) and still return whatever we collected.
+      const [vlansResult, ...subnetResults] = await Promise.allSettled([
+        getNetworkApplianceVlans(apiKey, networkId),
+        ...applianceSerials.map((s) => getApplianceDhcpSubnets(apiKey, s)),
+      ]);
+
+      const errors: string[] = [];
+      const vlans: MerakiApplianceVlanRow[] =
+        vlansResult.status === "fulfilled" ? vlansResult.value : [];
+      if (vlansResult.status === "rejected") {
+        const msg = vlansResult.reason instanceof Error ? vlansResult.reason.message : String(vlansResult.reason);
+        errors.push(`vlans: ${msg.slice(0, 200)}`);
+      }
+
+      const usageByVlan = new Map<number, { used: number; capacity: number }>();
+      subnetResults.forEach((res, idx) => {
+        if (res.status === "rejected") {
+          const msg = res.reason instanceof Error ? res.reason.message : String(res.reason);
+          errors.push(`dhcp/subnets[${applianceSerials[idx]}]: ${msg.slice(0, 160)}`);
+          return;
+        }
+        for (const row of res.value) {
+          const used = Number.isFinite(row.usedCount) ? row.usedCount : 0;
+          const free = Number.isFinite(row.freeCount) ? row.freeCount : 0;
+          const capacity = used + free;
+          // If a VLAN spans both MXes (warm-spare HA pair) usage can appear twice;
+          // we sum so we don't underreport — the network is one logical scope.
+          const prior = usageByVlan.get(row.vlanId);
+          if (prior) {
+            usageByVlan.set(row.vlanId, {
+              used: prior.used + used,
+              capacity: prior.capacity + capacity,
+            });
+          } else {
+            usageByVlan.set(row.vlanId, { used, capacity });
+          }
+        }
+      });
+
+      const scopes: DhcpScopeEntry[] = vlans.map((v) => {
+        const usage = usageByVlan.get(v.id) ?? { used: 0, capacity: 0 };
+        const utilizationPct =
+          usage.capacity > 0 ? Math.round((usage.used / usage.capacity) * 1000) / 10 : null;
+        const fixed = isPayloadRecord(v.fixedIpAssignments)
+          ? Object.keys(v.fixedIpAssignments).length
+          : 0;
+        const reserved = Array.isArray(v.reservedIpRanges) ? v.reservedIpRanges.length : 0;
+        const dnsServers = resolveDhcpDns(v);
+        const opts = Array.isArray(v.dhcpOptions) ? v.dhcpOptions : [];
+        let domainName: string | null = null;
+        const extraOptions: DhcpScopeEntry["extraOptions"] = [];
+        for (const o of opts) {
+          const code = Number(o.code);
+          if (!Number.isFinite(code)) {
+            continue;
+          }
+          if (code === 15 && typeof o.value === "string" && o.value.trim()) {
+            domainName = o.value.trim();
+            continue;
+          }
+          extraOptions.push({
+            code,
+            name: dhcpOptionLabel(code),
+            value: typeof o.value === "string" ? o.value : String(o.value ?? ""),
+          });
+        }
+        return {
+          vlanId: v.id,
+          name: typeof v.name === "string" && v.name.trim() ? v.name.trim() : `VLAN ${v.id}`,
+          subnet: typeof v.subnet === "string" ? v.subnet : "—",
+          applianceIp: typeof v.applianceIp === "string" ? v.applianceIp : "—",
+          used: usage.used,
+          capacity: usage.capacity,
+          utilizationPct,
+          mode: normalizeDhcpMode(v.dhcpHandling),
+          leaseTime: typeof v.dhcpLeaseTime === "string" ? v.dhcpLeaseTime : null,
+          dnsServers,
+          domainName,
+          fixedAssignments: fixed,
+          reservedRanges: reserved,
+          mandatoryDhcp: Boolean(v.mandatoryDhcp?.enabled),
+          extraOptions,
+        };
+      });
+
+      const totalUsed = scopes.reduce((acc, s) => acc + s.used, 0);
+      const totalCapacity = scopes.reduce((acc, s) => acc + s.capacity, 0);
+      const totalUtilizationPct =
+        totalCapacity > 0 ? Math.round((totalUsed / totalCapacity) * 1000) / 10 : null;
+
+      const body: DhcpScopeHealthCacheEntry = {
+        networkId,
+        capturedAt: new Date().toISOString(),
+        scopes,
+        totalUsed,
+        totalCapacity,
+        totalUtilizationPct,
+        ...(errors.length > 0 ? { note: errors.join(" | ").slice(0, 600) } : {}),
+      };
+      setDhcpScopeHealthCache(cacheKey, body);
+      void reply.header("X-DHCP-Scope-Health-Cache", "MISS");
+      return body;
+    },
+  );
+
+  // ===========================================================================
+  // Wireless health (per channel, per AP, per SSID) — sidecar API.
+  // Aggregates radio settings + channel utilization + connection stats + usage
+  // and client count, with a 60s TTL cache (this route can issue 15+ upstream
+  // calls per site so the cache materially matters).
+  // ===========================================================================
+
+  /** Map UI band label to the `band` query value Meraki requires on channel-util calls. */
+  function bandQueryValue(band: WirelessBand): "2.4" | "5" | "6" {
+    if (band === "2.4 GHz") return "2.4";
+    if (band === "5 GHz") return "5";
+    return "6";
+  }
+
+  /** Extract the per-bucket "total airtime" from a flat per-band channel-util row, tolerating field-name drift. */
+  function rowTotalUtilization(row: MerakiNetworkChannelUtilizationRow): number | null {
+    if (typeof row.utilization === "number") return row.utilization;
+    if (typeof row.utilizationTotal === "number") return row.utilizationTotal;
+    if (typeof row.utilization80211 === "number" && typeof row.utilizationNon80211 === "number") {
+      return row.utilization80211 + row.utilizationNon80211;
+    }
+    return null;
+  }
+
+  /** Average a numeric field across a channel-utilization series, ignoring null/NaN. */
+  function meanOrNull(values: Array<number | null | undefined>): number | null {
+    let sum = 0;
+    let n = 0;
+    for (const v of values) {
+      if (typeof v === "number" && Number.isFinite(v)) {
+        sum += v;
+        n += 1;
+      }
+    }
+    if (n === 0) {
+      return null;
+    }
+    return Math.round((sum / n) * 10) / 10;
+  }
+
+  function bandFromRadioSettings(
+    settings: Awaited<ReturnType<typeof getDeviceWirelessRadioSettings>>,
+    band: WirelessBand,
+  ): { channel: number | null; channelWidthMhz: number | null; txPowerDbm: number | null } {
+    const slot =
+      band === "2.4 GHz" ? settings.twoFourGhzSettings :
+      band === "5 GHz" ? settings.fiveGhzSettings :
+      settings.sixGhzSettings;
+    if (!slot) {
+      return { channel: null, channelWidthMhz: null, txPowerDbm: null };
+    }
+    return {
+      channel: typeof slot.channel === "number" ? slot.channel : null,
+      channelWidthMhz: typeof slot.channelWidth === "number" ? slot.channelWidth : null,
+      txPowerDbm: typeof slot.targetPower === "number" ? slot.targetPower : null,
+    };
+  }
+
+  /** Extract an avg client RSSI in dBm from any of the response shapes Meraki has used over time. */
+  function avgRssiFromConnectionStats(
+    stats: Awaited<ReturnType<typeof getDeviceWirelessConnectionStats>>,
+  ): number | null {
+    const direct = stats?.signalQuality?.avgRssi;
+    if (typeof direct === "number" && Number.isFinite(direct)) {
+      return Math.round(direct * 10) / 10;
+    }
+    if (Array.isArray(stats?.byBand) && stats.byBand.length > 0) {
+      const vals = stats.byBand
+        .map((b) => (typeof b.avgRssi === "number" && Number.isFinite(b.avgRssi) ? b.avgRssi : null))
+        .filter((v): v is number => v != null);
+      if (vals.length > 0) {
+        return Math.round((vals.reduce((a, b) => a + b, 0) / vals.length) * 10) / 10;
+      }
+    }
+    return null;
+  }
+
+  app.get(
+    "/api/dashboard/sites/:siteId/wireless-health",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { siteId } = req.params as { siteId: string };
+      const q = req.query as Record<string, string | undefined>;
+
+      const timespanRaw = q.timespan != null ? Number.parseInt(String(q.timespan), 10) : 3600;
+      const timespanSec =
+        Number.isFinite(timespanRaw) && timespanRaw >= 300 && timespanRaw <= 86_400 ? timespanRaw : 3600;
+      // Per Meraki API: `channelUtilizationHistory` only accepts 600/1200/3600/14400/86400,
+      // while `clientCountHistory` accepts 300/600/.... Keep them separate so we don't 400.
+      const channelUtilResolution = 600;
+      const clientCountResolution = 300;
+
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      if (!site.merakiNetworkId?.trim()) {
+        return reply.code(400).send({ error: "Site has no Meraki network linked" });
+      }
+
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "meraki" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap?.payload) {
+        return reply.code(404).send({ error: "No Meraki snapshot for this site" });
+      }
+      const wirelessDevices = wirelessDevicesFromMerakiSnapshotPayload(snap.payload);
+      if (wirelessDevices.length === 0) {
+        return reply
+          .code(404)
+          .send({ error: "Latest Meraki snapshot has no wireless devices (MR / CW / MX-W) to query." });
+      }
+
+      const cacheKey = wirelessHealthCacheKey(siteId, timespanSec);
+      const cached = getWirelessHealthFromCache(cacheKey);
+      if (cached) {
+        void reply.header("X-Wireless-Health-Cache", "HIT");
+        return cached;
+      }
+
+      const apiKey = await getMerakiApiKey();
+      if (!apiKey) {
+        return reply.code(503).send({ error: "Meraki API key not configured" });
+      }
+      const networkId = site.merakiNetworkId.trim();
+
+      // Load configured model capacities once; missing models fall back to 40 (safe default).
+      const capacityRows = await prisma.merakiModelClientCapacity.findMany();
+      const capacityByModel = new Map<string, number>(
+        capacityRows.map((r) => [r.model.toUpperCase(), r.capacity]),
+      );
+      const capacityFor = (model: string): number => capacityByModel.get(model.toUpperCase()) ?? 40;
+
+      const errors: string[] = [];
+
+      // ----- per-AP Meraki calls -----
+      // Strategy: first round = radio settings + connection stats + client count
+      // (all per-AP, parallel). Second round = channel utilization per (AP × band),
+      // because Meraki rejects deviceSerial-only requests and returns 400 unless
+      // `band` is specified too. We only query bands that the AP has actually
+      // configured (channel != null in radio settings), which avoids wasted calls
+      // and 400s on bands the model doesn't support.
+      const ALL_BANDS: WirelessBand[] = ["2.4 GHz", "5 GHz", "6 GHz"];
+
+      const perAp = await Promise.all(
+        wirelessDevices.map(async (dev) => {
+          const [radioRes, statsRes, clientRes] = await Promise.allSettled([
+            getDeviceWirelessRadioSettings(apiKey, dev.serial),
+            getDeviceWirelessConnectionStats(apiKey, dev.serial, { timespan: timespanSec }),
+            getNetworkWirelessClientCountHistory(apiKey, networkId, {
+              timespan: timespanSec,
+              resolution: clientCountResolution,
+              deviceSerial: dev.serial,
+            }),
+          ]);
+
+          if (radioRes.status === "rejected") {
+            errors.push(`radio/${dev.serial}: ${String(radioRes.reason).slice(0, 120)}`);
+          }
+          if (statsRes.status === "rejected") {
+            errors.push(`stats/${dev.serial}: ${String(statsRes.reason).slice(0, 120)}`);
+          }
+          if (clientRes.status === "rejected") {
+            errors.push(`clientCount/${dev.serial}: ${String(clientRes.reason).slice(0, 120)}`);
+          }
+
+          const radio =
+            radioRes.status === "fulfilled"
+              ? radioRes.value
+              : ({ serial: dev.serial } as Awaited<ReturnType<typeof getDeviceWirelessRadioSettings>>);
+          const stats =
+            statsRes.status === "fulfilled"
+              ? statsRes.value
+              : ({} as Awaited<ReturnType<typeof getDeviceWirelessConnectionStats>>);
+          const counts = clientRes.status === "fulfilled" ? clientRes.value : [];
+
+          // Decide which bands to query channel-util for.
+          //
+          // Heuristic: always include 2.4 + 5 GHz — every modern MR (MR3x and up)
+          // supports both, so the upstream call is safe. Only include 6 GHz when
+          // we have positive evidence (radio settings hint OR model suggests
+          // Wi-Fi 6E/7), because asking for 6 GHz on a non-6E radio returns 400.
+          //
+          // The previous heuristic ("query only bands radio-settings reported
+          // non-null for") broke for APs governed by an RF profile, where the
+          // per-device radio-settings endpoint returns null for every channel /
+          // power / width even though the AP is actively radiating. Result: no
+          // channel-util calls were made and the sidecar rendered empty bands.
+          const SIX_GHZ_MODELS = /^(MR|CW)(57|78|86|87)/i;
+          const supportsSixGhz =
+            SIX_GHZ_MODELS.test(dev.model) ||
+            (() => {
+              const rs6 = bandFromRadioSettings(radio, "6 GHz");
+              return rs6.channel != null || rs6.channelWidthMhz != null || rs6.txPowerDbm != null;
+            })();
+
+          const configuredBands: Array<{ band: WirelessBand; rs: ReturnType<typeof bandFromRadioSettings> }> = [];
+          for (const band of ALL_BANDS) {
+            if (band === "6 GHz" && !supportsSixGhz) {
+              continue;
+            }
+            const rs = bandFromRadioSettings(radio, band);
+            configuredBands.push({ band, rs });
+          }
+
+          // Fan out channel-util per (AP × configured band).
+          const utilResults = await Promise.allSettled(
+            configuredBands.map(({ band }) =>
+              getNetworkChannelUtilizationHistory(apiKey, networkId, {
+                timespan: timespanSec,
+                resolution: channelUtilResolution,
+                deviceSerial: dev.serial,
+                band: bandQueryValue(band),
+              }),
+            ),
+          );
+
+          const bands: WirelessApBandEntry[] = configuredBands.map(({ band, rs }, idx) => {
+            const utilRes = utilResults[idx];
+            if (utilRes?.status === "rejected") {
+              errors.push(`util/${dev.serial}/${bandQueryValue(band)}: ${String(utilRes.reason).slice(0, 120)}`);
+            }
+            const series: MerakiNetworkChannelUtilizationRow[] =
+              utilRes?.status === "fulfilled" ? utilRes.value : [];
+            const airtimePct = meanOrNull(series.map((r) => rowTotalUtilization(r)));
+            const nonWifiPct = meanOrNull(series.map((r) => r.utilizationNon80211 ?? null));
+            return {
+              band,
+              channel: rs.channel,
+              channelWidthMhz: rs.channelWidthMhz,
+              airtimePct,
+              nonWifiPct,
+              txPowerDbm: rs.txPowerDbm,
+            };
+          });
+
+          // Average client count from the time series; round to nearest int.
+          const clientAvg = meanOrNull(counts.map((c) => c.clientCount));
+          const clientCount = clientAvg != null ? Math.round(clientAvg) : 0;
+
+          const ap: WirelessApEntry = {
+            name: dev.name,
+            model: dev.model,
+            serial: dev.serial,
+            clientCount,
+            clientCapacity: capacityFor(dev.model),
+            avgClientRssiDbm: avgRssiFromConnectionStats(stats),
+            bands,
+          };
+          return ap;
+        }),
+      );
+
+      // ----- per-channel rollup across all APs -----
+      const channelAgg = new Map<
+        string,
+        { band: WirelessBand; channel: number; apCount: number; airtimes: number[]; nonWifis: number[] }
+      >();
+      for (const ap of perAp) {
+        for (const band of ap.bands) {
+          if (band.channel == null) {
+            continue;
+          }
+          const key = `${band.band}\x1e${band.channel}`;
+          let bucket = channelAgg.get(key);
+          if (!bucket) {
+            bucket = { band: band.band, channel: band.channel, apCount: 0, airtimes: [], nonWifis: [] };
+            channelAgg.set(key, bucket);
+          }
+          bucket.apCount += 1;
+          if (band.airtimePct != null) {
+            bucket.airtimes.push(band.airtimePct);
+          }
+          if (band.nonWifiPct != null) {
+            bucket.nonWifis.push(band.nonWifiPct);
+          }
+        }
+      }
+      const channels: WirelessChannelEntry[] = [...channelAgg.values()]
+        .map((c) => ({
+          band: c.band,
+          channel: c.channel,
+          apsOnChannel: c.apCount,
+          avgAirtimePct: meanOrNull(c.airtimes),
+          avgNonWifiPct: meanOrNull(c.nonWifis),
+        }))
+        .sort((a, b) => (a.band === b.band ? a.channel - b.channel : a.band.localeCompare(b.band)));
+
+      // ----- per-SSID config (single network-scoped call returns names + flags for all 15 slots) -----
+      // The previous design iterated `wireless/usageHistory?ssid=N` and `clientCountHistory?ssid=N`
+      // for slots 0..14, but Meraki requires `deviceSerial` on those endpoints (passing only `ssid`
+      // returns 400 "Must specify a device or network client"), and the 15-slot fan-out burned
+      // through the org's rate budget. We now fetch SSID configuration in one shot and surface
+      // name / auth / IP mode / band selection. True per-SSID load shares require N_APs × N_SSIDs
+      // calls and will land in a follow-up with proper rate-limit handling.
+      let ssids: WirelessSsidEntry[] = [];
+      try {
+        const ssidConfigs = await getNetworkWirelessSsids(apiKey, networkId);
+        ssids = ssidConfigs
+          .filter((s) => s.enabled)
+          .map((s) => ({
+            number: s.number,
+            name:
+              typeof s.name === "string" && s.name.trim()
+                ? s.name.trim()
+                : `SSID ${s.number}`,
+            enabled: true,
+            authMode: typeof s.authMode === "string" ? s.authMode : null,
+            wpaEncryptionMode:
+              typeof s.wpaEncryptionMode === "string" ? s.wpaEncryptionMode : null,
+            ipAssignmentMode:
+              typeof s.ipAssignmentMode === "string" ? s.ipAssignmentMode : null,
+            bandSelection: typeof s.bandSelection === "string" ? s.bandSelection : null,
+            minBitrateMbps: typeof s.minBitrate === "number" ? s.minBitrate : null,
+            visible: s.visible !== false,
+          }))
+          .sort((a, b) => a.number - b.number);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        errors.push(`ssids: ${msg.slice(0, 200)}`);
+      }
+
+      // Server-side policy: a fan-out of 2*apsCount*enabledSsidCount Meraki calls
+      // is acceptable as a single click ("load all") below this threshold.
+      // Above it the UI should show per-row "Load" buttons so the user controls
+      // when to spend the rate budget. Tunable without a UI redeploy.
+      const bulkLoadThreshold = (() => {
+        const raw = Number.parseInt(process.env.WIRELESS_SSID_LOAD_BULK_THRESHOLD ?? "20", 10);
+        return Number.isFinite(raw) && raw > 0 ? raw : 20;
+      })();
+      const estimatedCalls = perAp.length * ssids.length * 2;
+      const ssidLoadHint = {
+        estimatedCalls,
+        bulkLoadThreshold,
+        bulkLoadRecommended: estimatedCalls > 0 && estimatedCalls <= bulkLoadThreshold,
+        apsCount: perAp.length,
+        enabledSsidCount: ssids.length,
+      };
+
+      const body: WirelessHealthCacheEntry = {
+        networkId,
+        capturedAt: new Date().toISOString(),
+        timespanSeconds: timespanSec,
+        channels,
+        aps: perAp,
+        ssids,
+        ssidLoadHint,
+        ...(errors.length > 0 ? { note: errors.join(" | ").slice(0, 800) } : {}),
+      };
+      setWirelessHealthCache(cacheKey, body);
+      void reply.header("X-Wireless-Health-Cache", "MISS");
+      return body;
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Per-SSID load-share endpoint — opt-in / lazy.
+  //
+  // Cost: 2 Meraki calls per AP (clientCountHistory + usageHistory, both scoped
+  // by ssid + deviceSerial). The UI orchestrates which SSIDs to load and paces
+  // requests for sites above the bulkLoadThreshold (see `ssidLoadHint`).
+  //
+  // Returns aggregates only — share % is computed client-side by dividing each
+  // SSID's avgClients / avgKbps by the sum across all *loaded* SSIDs. That's
+  // honest about partial loads ("share among loaded SSIDs", not "share of
+  // network") and avoids querying full network totals for the denominator.
+  // ---------------------------------------------------------------------------
+  app.get(
+    "/api/dashboard/sites/:siteId/wireless-health/ssid-load/:ssidNumber",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { siteId, ssidNumber: ssidNumberRaw } = req.params as {
+        siteId: string;
+        ssidNumber: string;
+      };
+
+      // Validate ssidNumber strictly — Meraki accepts 0–14 only and we don't want
+      // arbitrary integers reaching the upstream call.
+      const ssidNumberParsed = Number.parseInt(ssidNumberRaw, 10);
+      if (
+        !Number.isFinite(ssidNumberParsed) ||
+        ssidNumberParsed < 0 ||
+        ssidNumberParsed > 14 ||
+        String(ssidNumberParsed) !== ssidNumberRaw.trim()
+      ) {
+        return reply.code(400).send({ error: "ssidNumber must be an integer 0–14" });
+      }
+      const ssidNumber = ssidNumberParsed;
+
+      const q = req.query as Record<string, string | undefined>;
+      const timespanRaw = q.timespan != null ? Number.parseInt(String(q.timespan), 10) : 3600;
+      const timespanSec =
+        Number.isFinite(timespanRaw) && timespanRaw >= 300 && timespanRaw <= 86_400 ? timespanRaw : 3600;
+      const resolution = 300;
+
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      if (!site.merakiNetworkId?.trim()) {
+        return reply.code(400).send({ error: "Site has no Meraki network linked" });
+      }
+
+      const cacheKey = wirelessSsidLoadCacheKey(siteId, ssidNumber, timespanSec);
+      const cached = getWirelessSsidLoadFromCache(cacheKey);
+      if (cached && q.refresh !== "1") {
+        const ageMs = getWirelessSsidLoadEntryAgeMs(cacheKey);
+        void reply.header("X-SSID-Load-Cache", "HIT");
+        if (ageMs != null) {
+          void reply.header("X-SSID-Load-Age-Ms", String(ageMs));
+        }
+        return cached;
+      }
+
+      // Resolve SSID name from the cached wireless-health payload so we don't
+      // need a second call to `/wireless/ssids`. Falls back to a synthetic name.
+      const wirelessCacheKey = wirelessHealthCacheKey(siteId, timespanSec);
+      const wirelessCached = getWirelessHealthFromCache(wirelessCacheKey);
+      const ssidConfig = wirelessCached?.ssids.find((s) => s.number === ssidNumber);
+      const ssidName = ssidConfig?.name ?? `SSID ${ssidNumber}`;
+      if (wirelessCached && !ssidConfig) {
+        return reply
+          .code(404)
+          .send({ error: `SSID ${ssidNumber} is not enabled on this network` });
+      }
+
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "meraki" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap?.payload) {
+        return reply.code(404).send({ error: "No Meraki snapshot for this site" });
+      }
+      const wirelessDevices = wirelessDevicesFromMerakiSnapshotPayload(snap.payload);
+      if (wirelessDevices.length === 0) {
+        return reply
+          .code(404)
+          .send({ error: "Latest Meraki snapshot has no wireless devices to query." });
+      }
+
+      const apiKey = await getMerakiApiKey();
+      if (!apiKey) {
+        return reply.code(503).send({ error: "Meraki API key not configured" });
+      }
+      const networkId = site.merakiNetworkId.trim();
+
+      const errors: string[] = [];
+
+      // Fan out 2 Meraki calls per AP: counts and bytes for *this* SSID at *that* AP.
+      // We parallelize per-AP since N_APs is bounded; the global per-org budget is
+      // protected by the cache TTL (5 min) and the UI's pacing of which SSIDs to
+      // load.
+      const results = await Promise.all(
+        wirelessDevices.map(async (dev) => {
+          const [countsRes, usageRes] = await Promise.allSettled([
+            getNetworkWirelessClientCountHistory(apiKey, networkId, {
+              timespan: timespanSec,
+              resolution,
+              deviceSerial: dev.serial,
+              ssid: ssidNumber,
+            }),
+            getNetworkWirelessUsageHistory(apiKey, networkId, {
+              timespan: timespanSec,
+              resolution,
+              deviceSerial: dev.serial,
+              ssid: ssidNumber,
+            }),
+          ]);
+          if (countsRes.status === "rejected") {
+            errors.push(
+              `count/${dev.serial}/ssid${ssidNumber}: ${String(countsRes.reason).slice(0, 120)}`,
+            );
+          }
+          if (usageRes.status === "rejected") {
+            errors.push(
+              `usage/${dev.serial}/ssid${ssidNumber}: ${String(usageRes.reason).slice(0, 120)}`,
+            );
+          }
+          const counts = countsRes.status === "fulfilled" ? countsRes.value : [];
+          const usage = usageRes.status === "fulfilled" ? usageRes.value : [];
+
+          const avgClientsForAp = meanOrNull(counts.map((r) => r.clientCount)) ?? 0;
+          const avgKbpsForAp =
+            meanOrNull(usage.map((r) => r.totalKbps ?? null)) ??
+            // Fallback: derive from sent + received if totalKbps isn't returned.
+            meanOrNull(
+              usage.map((r) => {
+                const s = typeof r.sentKbps === "number" ? r.sentKbps : 0;
+                const rcv = typeof r.receivedKbps === "number" ? r.receivedKbps : 0;
+                return s + rcv > 0 ? s + rcv : null;
+              }),
+            ) ??
+            0;
+
+          return {
+            ok: countsRes.status === "fulfilled" || usageRes.status === "fulfilled",
+            avgClientsForAp,
+            avgKbpsForAp,
+          };
+        }),
+      );
+
+      const apsAggregated = results.filter((r) => r.ok).length;
+      const avgClients = results.reduce((acc, r) => acc + r.avgClientsForAp, 0);
+      const avgKbps = results.reduce((acc, r) => acc + r.avgKbpsForAp, 0);
+
+      const body: WirelessSsidLoadEntry = {
+        ssidNumber,
+        ssidName,
+        avgClients: Math.round(avgClients * 10) / 10,
+        avgKbps: Math.round(avgKbps * 10) / 10,
+        apsAggregated,
+        capturedAt: new Date().toISOString(),
+        timespanSeconds: timespanSec,
+        ...(errors.length > 0 ? { note: errors.join(" | ").slice(0, 400) } : {}),
+      };
+      setWirelessSsidLoadCache(cacheKey, body);
+      void reply.header("X-SSID-Load-Cache", "MISS");
+      return body;
+    },
+  );
+
+  // ---------------------------------------------------------------------------
+  // Per-AP wireless connection log.
+  //
+  // Surfaces Meraki dashboard events (association, deauth, 8021x, dhcp_no_lease,
+  // etc.) for a single MR / CW access point at a site. Drives the "View log"
+  // button under the Live column in the equipment table.
+  //
+  // Window slugs: 1h | 12h | 24h | 7d (mirrored from the admin lens default
+  // `wirelessConnLogDefaultWindow`). The UI passes the active window via the
+  // `window` query param; defaults to 12h here so a missing param still works.
+  //
+  // Cache: 30 s TTL per (site, serial, window) — short enough that operators
+  // triaging an incident see fresh events on re-open, long enough to dedupe
+  // double-clicks and rapid window-toggle interactions.
+  // ---------------------------------------------------------------------------
+  app.get(
+    "/api/dashboard/sites/:siteId/wireless/:serial/connection-log",
+    { preHandler: requireAuth },
+    async (req, reply) => {
+      const { siteId, serial } = req.params as { siteId: string; serial: string };
+
+      // Allow-list the serial format to prevent path traversal via the param —
+      // Meraki serials are 4 groups of 4 chars separated by dashes; we tolerate
+      // a slightly wider range to be lenient about future SKU naming.
+      const trimmedSerial = String(serial ?? "").trim().toUpperCase();
+      if (!/^[A-Z0-9-]{4,32}$/.test(trimmedSerial)) {
+        return reply.code(400).send({ error: "Invalid device serial" });
+      }
+
+      const q = req.query as Record<string, string | undefined>;
+      const rawWindow = q.window;
+      const window: WirelessConnectionLogWindow =
+        rawWindow === "1h" || rawWindow === "12h" || rawWindow === "24h" || rawWindow === "7d"
+          ? rawWindow
+          : "12h";
+
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      if (!site.merakiNetworkId?.trim()) {
+        return reply.code(400).send({ error: "Site has no Meraki network linked" });
+      }
+      const networkId = site.merakiNetworkId.trim();
+
+      // Confirm the requested serial is genuinely a wireless device in this
+      // site's latest snapshot. Prevents using this endpoint to scrape events
+      // for unrelated devices across the org by guessing serials.
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "meraki" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap?.payload) {
+        return reply.code(404).send({ error: "No Meraki snapshot for this site" });
+      }
+      const wirelessDevices = wirelessDevicesFromMerakiSnapshotPayload(snap.payload);
+      const match = wirelessDevices.find((d) => d.serial.toUpperCase() === trimmedSerial);
+      if (!match) {
+        return reply
+          .code(404)
+          .send({ error: "Serial is not a wireless device in this site's latest snapshot" });
+      }
+
+      const cacheKey = wirelessConnectionLogCacheKey(siteId, trimmedSerial, window);
+      const cached = getWirelessConnectionLogFromCache(cacheKey);
+      if (cached && q.refresh !== "1") {
+        void reply.header("X-Wireless-Conn-Log-Cache", "HIT");
+        return cached;
+      }
+
+      const apiKey = await getMerakiApiKey();
+      if (!apiKey) {
+        return reply.code(503).send({ error: "Meraki API key not configured" });
+      }
+
+      try {
+        // Meraki events are returned newest-first; one page of 1000 covers most
+        // sites for 12h, and even busy stadium MRs rarely emit > 1000 events in 24h.
+        // For 7d windows on extremely chatty networks we may miss older events;
+        // a follow-up could paginate using `endingBefore`/`pageEndAt` until we
+        // pass `now - windowSeconds`.
+        const page = await getNetworkEvents(apiKey, networkId, {
+          productType: "wireless",
+          deviceSerial: trimmedSerial,
+          perPage: 1000,
+        });
+
+        const cutoffMs = Date.now() - WIRELESS_CONNECTION_LOG_WINDOW_SECONDS[window] * 1000;
+        const eventsInWindow: MerakiNetworkEvent[] = (page.events ?? []).filter((e) => {
+          const t = Date.parse(e.occurredAt);
+          return Number.isFinite(t) && t >= cutoffMs;
+        });
+
+        const body: WirelessConnectionLogEntry = {
+          serial: trimmedSerial,
+          deviceName: match.name ?? null,
+          networkId,
+          window,
+          windowSeconds: WIRELESS_CONNECTION_LOG_WINDOW_SECONDS[window],
+          capturedAt: new Date().toISOString(),
+          events: eventsInWindow,
+          ...(typeof page.message === "string" && page.message.length > 0
+            ? { note: page.message.slice(0, 400) }
+            : {}),
+        };
+        setWirelessConnectionLogCache(cacheKey, body);
+        void reply.header("X-Wireless-Conn-Log-Cache", "MISS");
+        return body;
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        req.log.warn({ err: e, siteId, serial: trimmedSerial, window }, "wireless connection log fetch failed");
+        return reply.code(502).send({ error: msg.slice(0, 600) });
+      }
+    },
+  );
 }
