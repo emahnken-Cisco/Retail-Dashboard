@@ -36,6 +36,10 @@ function isAgentToServerType(type: string): boolean {
   return type.toLowerCase() === "agent-to-server";
 }
 
+function isAgentToAgentType(type: string): boolean {
+  return type.toLowerCase() === "agent-to-agent";
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
@@ -226,14 +230,19 @@ function buildAllAgentScopedTests(agents: TEAgentWithAssignedTests[]): {
   testsByAgentId: Record<string, TestRow[]>;
   agentToServerTests: TestRow[];
   agentToServerTestsByAgentId: Record<string, TestRow[]>;
+  agentToAgentTests: TestRow[];
+  agentToAgentTestsByAgentId: Record<string, TestRow[]>;
 } {
   const http = buildScopedTests(agents, isHttpType, 100);
   const a2s = buildScopedTests(agents, isAgentToServerType, 100);
+  const a2a = buildScopedTests(agents, isAgentToAgentType, 100);
   return {
     httpTests: http.tests,
     testsByAgentId: http.testsByAgentId,
     agentToServerTests: a2s.tests,
     agentToServerTestsByAgentId: a2s.testsByAgentId,
+    agentToAgentTests: a2a.tests,
+    agentToAgentTestsByAgentId: a2a.testsByAgentId,
   };
 }
 
@@ -464,6 +473,8 @@ export async function runThousandEyesIngest(): Promise<void> {
         testsByAgentId: scoped.testsByAgentId,
         agentToServerTests: scoped.agentToServerTests,
         agentToServerTestsByAgentId: scoped.agentToServerTestsByAgentId,
+        agentToAgentTests: scoped.agentToAgentTests,
+        agentToAgentTestsByAgentId: scoped.agentToAgentTestsByAgentId,
         matchedByTag: Boolean(tag),
         endpointAgents,
         wirelessCorrelations,
@@ -492,6 +503,8 @@ export async function runThousandEyesIngest(): Promise<void> {
             testsByAgentId: scoped.testsByAgentId,
             agentToServerTests: scoped.agentToServerTests,
             agentToServerTestsByAgentId: scoped.agentToServerTestsByAgentId,
+            agentToAgentTests: scoped.agentToAgentTests,
+            agentToAgentTestsByAgentId: scoped.agentToAgentTestsByAgentId,
             matchedByTag: false,
             endpointAgents: [],
           },

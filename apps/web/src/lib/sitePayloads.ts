@@ -253,6 +253,8 @@ export type TESnapshot = {
   testsByAgentId?: Record<string, TETestRow[]>;
   agentToServerTests: TETestRow[];
   agentToServerTestsByAgentId?: Record<string, TETestRow[]>;
+  agentToAgentTests: TETestRow[];
+  agentToAgentTestsByAgentId?: Record<string, TETestRow[]>;
   matchedByTag: boolean;
   endpointAgents: TEEndpointAgentRow[];
 };
@@ -517,6 +519,8 @@ export function parseTESnapshot(payload: unknown): TESnapshot | null {
   const testsByAgentId = parseTETestsByAgentFromRecord(payload.testsByAgentId);
   const agentToServerTests = parseTETestRowsFromArray(payload.agentToServerTests);
   const agentToServerTestsByAgentId = parseTETestsByAgentFromRecord(payload.agentToServerTestsByAgentId);
+  const agentToAgentTests = parseTETestRowsFromArray(payload.agentToAgentTests);
+  const agentToAgentTestsByAgentId = parseTETestsByAgentFromRecord(payload.agentToAgentTestsByAgentId);
 
   // Build the correlations index up-front so each row pickup is O(1).
   const correlationsByAgentId = parseWirelessCorrelations(payload.wirelessCorrelations);
@@ -557,6 +561,8 @@ export function parseTESnapshot(payload: unknown): TESnapshot | null {
     testsByAgentId,
     agentToServerTests,
     agentToServerTestsByAgentId,
+    agentToAgentTests,
+    agentToAgentTestsByAgentId,
     matchedByTag: Boolean(payload.matchedByTag),
     endpointAgents,
   };
@@ -586,6 +592,13 @@ export function teAgentToServerTestsForSelection(te: TESnapshot | null, selected
     return [];
   }
   return teTestRowsForAgent(te.agentToServerTests, te.agentToServerTestsByAgentId, selectedAgentId);
+}
+
+export function teAgentToAgentTestsForSelection(te: TESnapshot | null, selectedAgentId: string | "all"): TETestRow[] {
+  if (!te) {
+    return [];
+  }
+  return teTestRowsForAgent(te.agentToAgentTests, te.agentToAgentTestsByAgentId, selectedAgentId);
 }
 
 /** Map / card health: green ok, orange degraded (expected WAN2/cellular path unhealthy but still online), amber partial, gray empty. */
@@ -640,7 +653,9 @@ export function mapPinStatus(location: DashboardLocation): LocationPinStatus {
   const teAgentsOk = Boolean(t && t.agents.length > 0);
   const teTestsOk = Boolean(
     t &&
-      (t.httpTests.some((x) => x.enabled) || t.agentToServerTests.some((x) => x.enabled)),
+      (t.httpTests.some((x) => x.enabled) ||
+        t.agentToServerTests.some((x) => x.enabled) ||
+        t.agentToAgentTests.some((x) => x.enabled)),
   );
   const baseOk = merakiOk && teAgentsOk && teTestsOk;
   if (!baseOk) {
@@ -687,9 +702,11 @@ export function mapPinStatusDescription(location: DashboardLocation): string {
       }
       if (
         !t ||
-        (!t.httpTests.some((x) => x.enabled) && !t.agentToServerTests.some((x) => x.enabled))
+        (!t.httpTests.some((x) => x.enabled) &&
+          !t.agentToServerTests.some((x) => x.enabled) &&
+          !t.agentToAgentTests.some((x) => x.enabled))
       ) {
-        parts.push("no enabled HTTP or agent-to-server tests");
+        parts.push("no enabled HTTP, agent-to-server, or agent-to-agent tests");
       }
       if (locationExpectsCircuitChecks(location) && m?.wan?.appliances?.length) {
         const w = m.wan.appliances[0];
