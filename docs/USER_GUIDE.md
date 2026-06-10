@@ -59,6 +59,65 @@ yourself out, wait 15 minutes or have an Organization Admin reset the password.
 - **Refresh** reloads data from the API (not a new Meraki/TE poll). Auto-refresh can
   update site list data while the tab is visible.
 
+### DHCP Health sidecar
+
+Click the **DHCP** pill on a location card to open a slide-out with one tile per
+DHCP scope. Each scope shows a utilization semi-gauge, lease duration, DNS
+servers, and the domain name handed out. Cached briefly server-side to avoid
+hammering Meraki on repeated opens.
+
+### Wireless Health sidecar
+
+Click the **Wi-Fi** pill on a location card to open per-AP semi-gauges:
+
+- **Clients vs configured capacity** (capacity comes from the admin **Wireless
+  Capacity** model matrix below; falls back to a sensible default per model
+  when not set).
+- **Average RSSI** (Tx/Rx), **channel**, **power level**.
+- **Channel utilization** for 2.4 / 5 / 6 GHz (uses RF-profile-managed fallbacks
+  when `radio/settings` returns nulls).
+- **Airtime / noise** percentages.
+- **Per-SSID load share**: for small sites the panel pre-loads every SSID; on
+  larger sites (above `WIRELESS_SSID_LOAD_BULK_THRESHOLD`) the panel shows a
+  **Load** button per row so you can spread Meraki calls over time. Results
+  are cached server-side for the lens-configured TTL.
+
+### Wireless Connection Log sidecar
+
+On the dashboard, each MR row has a **View log** button under the **Live**
+column. It opens a slide-out with the association / auth / DHCP / disassociation
+events for that single AP. The default window comes from the **Wireless
+connection-log default window** lens (1 h / 12 h / 24 h / 7 d); you can change
+the window from the sidecar itself for the current view.
+
+### Wi-Fi correlation for ThousandEyes Endpoint Agents
+
+Each endpoint agent row gains a **Wi-Fi** column showing a colored pill:
+
+- **Green** — healthy: matched to an MR, RSSI better than the amber threshold,
+  no recent failures.
+- **Amber** — weak RSSI (worse than amber threshold) **or** one or two recent
+  association / auth / DHCP failures on the matched MR.
+- **Red** — poor RSSI (worse than red threshold) **or** three or more recent
+  failures on the matched MR.
+- **Neutral / —** — endpoint is wired, ThousandEyes did not report Wi-Fi
+  details, or the snapshot pre-dates the correlator feature (re-run TE ingest
+  from **Admin → Run job**).
+
+The pill reads left-to-right as `<SSID> · <MR name> · <RSSI dBm>`.
+
+Hover for a tooltip with the matched MR serial, RSSI, SNR, and recent failure
+count. Click **Open AP log →** to jump to that MR's Wireless Connection Log
+pre-scoped to the right serial. Open the row's **Endpoint agent** detail
+sidecar to see the full correlation block — connection type, SSID, **Access
+point** (the matched MR's name, with a **via BSSID** badge when the BSSID
+fallback fired because TE did not expose the endpoint's client MAC, typical
+on Android / iOS / managed-MAC devices), BSSID, RSSI, SNR, channel, and a
+recent Meraki event timeline.
+
+Tone thresholds are admin-configurable in **Admin → Lenses & data → Wi-Fi
+impact thresholds** (Amber and Red dBm values).
+
 ## Locations and Circuits
 
 - **Locations** and **Circuits** tabs: **Organization Admins** and **Location & Circuit**
@@ -79,6 +138,16 @@ page.
 - CSV cells starting with `=`, `+`, `-`, `@`, tab, or CR are automatically prefixed with a
   single apostrophe to protect downstream Excel / LibreOffice users from formula
   injection.
+
+## Admin → Wireless Capacity
+
+Organization admins can manage the **model → max-clients** matrix used by the
+Wireless Health sidecar. The page lists every Meraki AP model with its
+configured client cap; **Add model** appends a new row, the pencil icon edits an
+existing row, and the trash icon removes one (the server refuses changes for
+non-org-admins and rejects payloads outside sensible bounds). Empty cells fall
+back to a baked-in default per model so the sidecar still has a denominator
+when no override exists.
 
 ## Reporting
 
@@ -122,6 +191,15 @@ change, set `HTTPS_ENABLED=true`, and **restart** the Node process.
 - **500 response with a `requestId`** — the server hides internal error details by
   design; capture the `requestId` from the response body and check the server logs for
   the matching `reqId` on the `unhandled error returned 500` line.
+- **Endpoint Wi-Fi pill shows `—` for every agent** — the snapshot pre-dates the
+  correlator feature. Trigger a fresh TE ingest from **Admin → Run job**. If the
+  pill still shows `—` only for some agents (typically Android / iOS), TE didn't
+  expose those endpoints' client MAC and the BSSID fallback couldn't match the
+  BSSID to a known MR — either the AP is non-Meraki or it belongs to a
+  different Meraki org. Organization admins can hit
+  `GET /api/dashboard/sites/:siteId/endpoint-agents/:agentId/wireless-debug`
+  to inspect the raw TE payload, the extracted snapshot, and the persisted
+  correlation for that agent.
 
 ## Source code
 

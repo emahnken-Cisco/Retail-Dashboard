@@ -2,8 +2,25 @@ import { prisma } from "../lib/prisma.js";
 import { getAdminSettings } from "../lib/settings.js";
 import { readFiniteCoord, resolveSiteCoordinates } from "../lib/siteCoordinates.js";
 import { decryptSecret } from "../lib/cryptoVault.js";
+import { getMerakiApiKey } from "../lib/merakiVault.js";
+import {
+  getNetworkWirelessClients,
+  getOrganizationWirelessSsidsStatusesByDevice,
+  type MerakiNetworkWirelessClient,
+} from "../lib/merakiClient.js";
 import type { TEAgentWithAssignedTests } from "../lib/thousandEyesClient.js";
 import { listAllEndpointAgents, listEnterpriseAgentsWithTests } from "../lib/thousandEyesClient.js";
+import {
+  clampRssiThresholds,
+  correlateEndpoint,
+  enrichApRefsWithNames,
+  indexBssidsByApRef,
+  indexWirelessClientsByMac,
+  snapshotEndpointWireless,
+  type RssiThresholds,
+  type WirelessApRef,
+  type WirelessEndpointCorrelation,
+} from "../lib/wirelessCorrelator.js";
 
 async function getTeToken(): Promise<string | null> {
   const row = await prisma.credentialVault.findUnique({ where: { provider: "thousandeyes" } });
@@ -63,6 +80,12 @@ function endpointAgentMatchesSite(
 
 function slimEndpointAgentRow(agent: Record<string, unknown>) {
   const loc = isRecord(agent.location) ? agent.location : null;
+  // Extract a compact wireless snapshot when TE returned `networkInterfaceProfiles`
+  // (we request it via `expand` in the listing call). When the agent is wired
+  // or TE omitted the expansion, the resulting connectionType is "Wired" or
+  // "Unknown" and the wireless fields are null — both flow through the
+  // correlator safely and the UI renders a neutral pill.
+  const wireless = snapshotEndpointWireless(agent);
   return {
     id: String(agent.id ?? ""),
     hostname: String(agent.computerName || agent.name || "—"),
@@ -74,7 +97,73 @@ function slimEndpointAgentRow(agent: Record<string, unknown>) {
     publicIP: agent.publicIP != null ? String(agent.publicIP) : "",
     lat: readFiniteCoord(loc?.latitude),
     lng: readFiniteCoord(loc?.longitude),
+    /** Wi‑Fi snapshot used by the correlator and rendered in the endpoint sidecar. */
+    wireless: {
+      connectionType: wireless.connectionType,
+      wirelessMac: wireless.wirelessMac,
+      ssid: wireless.ssid,
+      bssid: wireless.bssid,
+      rssiDbm: wireless.rssiDbm,
+      signalQualityDb: wireless.signalQualityDb,
+      channel: wireless.channel,
+      channelWidthMhz: wireless.channelWidthMhz,
+      band: wireless.band,
+    },
   };
+}
+
+type SlimEndpointAgent = ReturnType<typeof slimEndpointAgentRow>;
+
+/**
+ * Read the admin-configured RSSI tone thresholds from the `lenses` blob.
+ * Falls back to the correlator defaults when missing or malformed; the
+ * `clampRssiThresholds` helper guarantees a usable range either way.
+ */
+function readRssiThresholdsFromLenses(lensesRaw: unknown): RssiThresholds {
+  if (!isRecord(lensesRaw)) return clampRssiThresholds(undefined);
+  const amber = (lensesRaw as Record<string, unknown>).wirelessImpactRssiAmberDbm;
+  const red = (lensesRaw as Record<string, unknown>).wirelessImpactRssiRedDbm;
+  return clampRssiThresholds({
+    amberDbm: typeof amber === "number" ? amber : undefined,
+    redDbm: typeof red === "number" ? red : undefined,
+  });
+}
+
+/**
+ * Resolve a Meraki networkId for the site from the latest Meraki snapshot
+ * payload. Returns null when the snapshot is missing or shape is wrong;
+ * callers skip wireless correlation in that case rather than failing the
+ * whole ingest.
+ */
+function networkIdFromMerakiPayload(payload: unknown): string | null {
+  if (!isRecord(payload)) return null;
+  const id = payload.networkId;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+function organizationIdFromMerakiPayload(payload: unknown): string | null {
+  if (!isRecord(payload)) return null;
+  const id = payload.organizationId;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+/**
+ * Walk the `devices` array a Meraki snapshot already stores and return a
+ * `serial → friendlyName` map. Used to dress up the BSSID-based AP matches
+ * (Meraki's `byDevice` endpoint returns serial but no device name).
+ */
+function deviceNamesFromMerakiPayload(payload: unknown): Map<string, string | null> {
+  const map = new Map<string, string | null>();
+  if (!isRecord(payload)) return map;
+  const devices = Array.isArray(payload.devices) ? payload.devices : [];
+  for (const d of devices) {
+    if (!isRecord(d)) continue;
+    const serial = typeof d.serial === "string" ? d.serial : "";
+    if (!serial) continue;
+    const name = typeof d.name === "string" ? d.name : null;
+    map.set(serial, name);
+  }
+  return map;
 }
 
 type TestRow = { testId: number | string; testName: string; type: string; enabled: boolean };
@@ -168,14 +257,43 @@ export async function runThousandEyesIngest(): Promise<void> {
 
     const admin = await getAdminSettings();
     const teScope = { aid: admin.thousandEyesAid?.trim() || null };
+    const rssiThresholds = readRssiThresholdsFromLenses(admin.lenses);
     const agentsWithTests = await listEnterpriseAgentsWithTests(token, teScope);
     let endpointAgentPool: unknown[] = [];
     try {
-      endpointAgentPool = await listAllEndpointAgents(token, 600, teScope);
+      // Expand `networkInterfaceProfiles` in the listing call so each agent
+      // carries its current Wi-Fi profile (SSID/BSSID/RSSI/SNR/MAC) without
+      // requiring a per-agent fan-out — a single expanded listing keeps the
+      // ingest job within TE's rate limits even on large endpoint fleets.
+      endpointAgentPool = await listAllEndpointAgents(token, 600, teScope, [
+        "networkInterfaceProfiles",
+      ]);
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn(`[te ingest] list endpoint agents: ${msg.slice(0, 400)}`);
     }
+
+    // Best-effort Meraki API key for cross-pillar correlation. When absent
+    // (e.g. credentials not yet provisioned) we still ingest endpoint rows
+    // but skip the wireless correlation step entirely — endpoints render
+    // with a neutral pill in that case.
+    let merakiApiKey: string | null = null;
+    try {
+      merakiApiKey = await getMerakiApiKey();
+    } catch {
+      merakiApiKey = null;
+    }
+
+    /** Cache of wireless-clients per Meraki networkId for the duration of this run. */
+    const wirelessClientsByNetwork = new Map<string, MerakiNetworkWirelessClient[]>();
+    /**
+     * Cache of BSSID → AP-ref per Meraki organizationId for the duration of
+     * this run. One Meraki call per org per ingest cycle — the byDevice
+     * endpoint is org-scoped so siteN doesn't repeat the work.
+     */
+    const bssidIndexByOrg = new Map<string, Map<string, WirelessApRef>>();
+    /** Note keyed by orgId when the byDevice call failed. */
+    const bssidIndexErrByOrg = new Map<string, string>();
 
     const sites = await prisma.site.findMany();
 
@@ -199,12 +317,146 @@ export async function runThousandEyesIngest(): Promise<void> {
       const displayAgents = matchedAgents.length ? matchedAgents : agentsWithTests.slice(0, 50);
       const scoped = buildAllAgentScopedTests(displayAgents);
 
-      const endpointAgents = endpointAgentPool
+      const matchedRawEndpoints = endpointAgentPool
         .filter(isRecord)
         .filter((a) => endpointAgentMatchesSite(a, site, effLat, effLng))
-        .map(slimEndpointAgentRow)
-        .filter((r) => r.id.length > 0)
         .slice(0, 120);
+
+      const endpointAgents: SlimEndpointAgent[] = matchedRawEndpoints
+        .map(slimEndpointAgentRow)
+        .filter((r) => r.id.length > 0);
+
+      // ---- Wireless correlation (TE Endpoint Agent ↔ Meraki MR) -----------
+      // We always emit a correlation entry per endpoint so the UI gets a
+      // concrete reason (wired / no-Wi-Fi-data / no-Meraki-match / healthy
+      // / impacted) instead of falling back to a generic "—" pill. The
+      // Meraki wireless-clients call is only made when there's a Meraki
+      // networkId + API key + at least one wireless endpoint — otherwise
+      // the index is empty and every endpoint resolves to its
+      // pre-Meraki tone (wired / no-data / no-match) cleanly.
+      const wirelessCorrelations: Record<string, WirelessEndpointCorrelation> = {};
+      let wirelessCorrelationNote: string | null = null;
+      const merakiNetworkId = networkIdFromMerakiPayload(merakiSnap?.payload ?? null);
+      const merakiOrganizationId = organizationIdFromMerakiPayload(merakiSnap?.payload ?? null);
+      const serialToName = deviceNamesFromMerakiPayload(merakiSnap?.payload ?? null);
+
+      const wirelessAgents = endpointAgents.filter(
+        (a) => a.wireless.connectionType === "Wireless" && a.wireless.wirelessMac,
+      );
+      const wirelessAgentsWithBssid = endpointAgents.filter(
+        (a) => a.wireless.connectionType === "Wireless" && a.wireless.bssid,
+      );
+      const needsCorrelation = wirelessAgents.length + wirelessAgentsWithBssid.length > 0;
+
+      // ----- Client-MAC index (per network) --------------------------------
+      let macIndex = new Map<string, MerakiNetworkWirelessClient>();
+      const canQueryClients = Boolean(merakiApiKey && merakiNetworkId);
+      if (canQueryClients && wirelessAgents.length > 0) {
+        try {
+          let clients = wirelessClientsByNetwork.get(merakiNetworkId!);
+          if (!clients) {
+            clients = await getNetworkWirelessClients(merakiApiKey!, merakiNetworkId!, {
+              timespan: 86_400,
+            });
+            wirelessClientsByNetwork.set(merakiNetworkId!, clients);
+          }
+          macIndex = indexWirelessClientsByMac(clients);
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          wirelessCorrelationNote = msg.slice(0, 240);
+          console.warn(
+            `[te ingest] wireless client list (${merakiNetworkId}): ${msg.slice(0, 240)}`,
+          );
+        }
+      }
+
+      // ----- BSSID index (per org, cached for the run) ---------------------
+      // Always attempt the BSSID-based fallback when we have any wireless
+      // endpoint with a reported BSSID — this is how Android / iOS / managed-
+      // MAC fleets get matched to an MR even though TE never exposes their
+      // client MAC.
+      let bssidIndex: Map<string, WirelessApRef> | undefined;
+      if (merakiApiKey && merakiOrganizationId && wirelessAgentsWithBssid.length > 0) {
+        let cached = bssidIndexByOrg.get(merakiOrganizationId);
+        if (!cached && !bssidIndexErrByOrg.has(merakiOrganizationId)) {
+          try {
+            const rows = await getOrganizationWirelessSsidsStatusesByDevice(
+              merakiApiKey,
+              merakiOrganizationId,
+            );
+            cached = indexBssidsByApRef(rows);
+            bssidIndexByOrg.set(merakiOrganizationId, cached);
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            bssidIndexErrByOrg.set(merakiOrganizationId, msg.slice(0, 240));
+            console.warn(
+              `[te ingest] wireless BSSID index (org=${merakiOrganizationId}): ${msg.slice(0, 240)}`,
+            );
+            // Surface as a correlation note ONLY when no MAC-based note already exists.
+            if (!wirelessCorrelationNote) {
+              wirelessCorrelationNote = `BSSID index unavailable: ${msg.slice(0, 200)}`;
+            }
+          }
+        }
+        if (cached) {
+          // Patch in per-site device names so the AP-ref carries "MR-LAB-AP-03".
+          // Safe to mutate: enrichApRefsWithNames only fills in missing names.
+          bssidIndex = enrichApRefsWithNames(cached, serialToName);
+        }
+      } else if (
+        !merakiApiKey &&
+        (wirelessAgents.length > 0 || wirelessAgentsWithBssid.length > 0) &&
+        !wirelessCorrelationNote
+      ) {
+        wirelessCorrelationNote = "Meraki API key not configured — wireless correlation skipped";
+      } else if (
+        merakiApiKey &&
+        !merakiOrganizationId &&
+        wirelessAgentsWithBssid.length > 0 &&
+        !wirelessCorrelationNote
+      ) {
+        wirelessCorrelationNote =
+          "Meraki organizationId missing from latest Meraki snapshot — BSSID fallback disabled";
+      }
+
+      for (const a of endpointAgents) {
+        const snapshot = {
+          agentId: a.id,
+          connectionType: a.wireless.connectionType,
+          wirelessMac: a.wireless.wirelessMac,
+          ssid: a.wireless.ssid,
+          bssid: a.wireless.bssid,
+          rssiDbm: a.wireless.rssiDbm,
+          signalQualityDb: a.wireless.signalQualityDb,
+          channel: a.wireless.channel,
+          channelWidthMhz: a.wireless.channelWidthMhz,
+          band: a.wireless.band,
+        };
+        wirelessCorrelations[a.id] = correlateEndpoint(
+          snapshot,
+          macIndex,
+          rssiThresholds,
+          undefined,
+          bssidIndex,
+        );
+      }
+
+      // Light diagnostics — counts only; no PII / MAC values leak.
+      if (endpointAgents.length > 0) {
+        const wirelessDetected = endpointAgents.filter(
+          (a) => a.wireless.connectionType === "Wireless",
+        ).length;
+        const matchedByMac = Object.values(wirelessCorrelations).filter(
+          (c) => c.matchMethod === "client-mac",
+        ).length;
+        const matchedByBssid = Object.values(wirelessCorrelations).filter(
+          (c) => c.matchMethod === "bssid",
+        ).length;
+        void needsCorrelation;
+        console.info(
+          `[te ingest] site=${site.id} endpoints=${endpointAgents.length} wireless=${wirelessDetected} with-mac=${wirelessAgents.length} with-bssid=${wirelessAgentsWithBssid.length} mac-matched=${matchedByMac} bssid-matched=${matchedByBssid} note=${wirelessCorrelationNote ?? "none"}`,
+        );
+      }
 
       const payload = {
         agents: displayAgents.map(slimAgentSnapshot),
@@ -214,6 +466,8 @@ export async function runThousandEyesIngest(): Promise<void> {
         agentToServerTestsByAgentId: scoped.agentToServerTestsByAgentId,
         matchedByTag: Boolean(tag),
         endpointAgents,
+        wirelessCorrelations,
+        wirelessCorrelationNote,
       };
 
       await prisma.metricSnapshot.create({

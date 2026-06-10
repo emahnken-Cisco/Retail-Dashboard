@@ -4,6 +4,11 @@ import { getAdminSettings } from "../lib/settings.js";
 import { resolvedLocalContactFromSite } from "../lib/resolvedCircuitContact.js";
 import { decryptSecretForHttp } from "../lib/cryptoVault.js";
 import { buildEndpointAgentDashboardDetail } from "../lib/endpointAgentDetail.js";
+import { getEndpointAgentExpanded } from "../lib/thousandEyesClient.js";
+import {
+  snapshotEndpointWireless,
+  type WirelessEndpointCorrelation,
+} from "../lib/wirelessCorrelator.js";
 import { replyIfPrismaSchemaMismatch } from "../lib/prismaErrors.js";
 import {
   OPENWEATHER_QUOTA_EXCEEDED_TILE,
@@ -13,6 +18,7 @@ import {
 import { tracedFetch } from "../lib/outboundTrace.js";
 import { merakiGeoFromSnapshotPayload, resolveSiteCoordinates } from "../lib/siteCoordinates.js";
 import { requireAuth } from "./auth.js";
+import { requireOrgAdmin } from "../lib/rbac.js";
 import { getMerakiApiKey } from "../lib/merakiVault.js";
 import {
   getApplianceDhcpSubnets,
@@ -74,6 +80,49 @@ import {
 
 function isPayloadRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/** Slim row surfaced to the endpoint sidecar — one Meraki wireless event. */
+type WirelessClientEventRow = {
+  occurredAt: string;
+  type: string;
+  description: string | null;
+  deviceSerial: string | null;
+  deviceName: string | null;
+  ssidName: string | null;
+  ssidNumber: number | null;
+};
+
+/**
+ * Pull the persisted wireless correlation for a given endpoint agent out of
+ * a TE snapshot payload. Returns `null` when the snapshot pre-dates the
+ * correlator feature or the agent has no entry.
+ */
+function pickAgentCorrelation(
+  payload: Record<string, unknown>,
+  agentId: string,
+): WirelessEndpointCorrelation | null {
+  const raw = payload.wirelessCorrelations;
+  if (!isPayloadRecord(raw)) return null;
+  const entry = (raw as Record<string, unknown>)[agentId];
+  if (!isPayloadRecord(entry)) return null;
+  // We trust the ingest job's shape but defensively coerce known fields so
+  // a stale snapshot with missing keys can't crash the sidecar render.
+  return entry as unknown as WirelessEndpointCorrelation;
+}
+
+/** Resolve the Meraki networkId from a snapshot payload (TE or Meraki). */
+function networkIdFromMerakiSnapshot(payload: unknown): string | null {
+  if (!isPayloadRecord(payload)) return null;
+  const id = payload.networkId;
+  return typeof id === "string" && id.length > 0 ? id : null;
+}
+
+/** Convert a 12-char hex MAC into the `aa:bb:cc:dd:ee:ff` form Meraki accepts. */
+function colonizeMac(mac: string): string {
+  const cleaned = mac.replace(/[^0-9a-fA-F]/g, "").toLowerCase();
+  if (cleaned.length !== 12) return mac;
+  return cleaned.match(/.{1,2}/g)!.join(":");
 }
 
 type SiteWeatherApiPayload = {
@@ -646,10 +695,133 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       try {
         const admin = await getAdminSettings();
         const detail = await buildEndpointAgentDashboardDetail(token, agentId, admin.thousandEyesAid);
-        return detail;
+
+        // Attach the pre-computed wireless correlation for this agent (set
+        // during TE ingest) plus a recent slice of Meraki wireless events
+        // for the matched client MAC. The events call is best-effort and
+        // tightly scoped (1h window, clientMac filter, 50 rows max) so it
+        // adds at most one Meraki call per sidecar open.
+        const correlation = pickAgentCorrelation(payload, agentId);
+        let merakiClientEvents: WirelessClientEventRow[] = [];
+        let eventsNote: string | null = null;
+        if (correlation?.matchedMeraki?.serial && correlation.wirelessMac) {
+          const netId = networkIdFromMerakiSnapshot(payload);
+          const merakiSnap = await prisma.metricSnapshot.findFirst({
+            where: { siteId, source: "meraki" },
+            orderBy: { capturedAt: "desc" },
+            select: { payload: true },
+          });
+          const resolvedNetId = netId ?? networkIdFromMerakiSnapshot(merakiSnap?.payload ?? null);
+          const apiKey = await getMerakiApiKey();
+          if (apiKey && resolvedNetId) {
+            try {
+              // `clientMac` filter expects the address with colons; Meraki
+              // does the case-insensitive match internally so we don't have
+              // to upper-case.
+              const macColon = colonizeMac(correlation.wirelessMac);
+              const page = await getNetworkEvents(apiKey, resolvedNetId, {
+                productType: "wireless",
+                clientMac: macColon,
+                perPage: 50,
+              });
+              merakiClientEvents = (page.events ?? [])
+                .filter((ev) => {
+                  const ts = ev.occurredAt ? Date.parse(ev.occurredAt) : NaN;
+                  if (Number.isNaN(ts)) return false;
+                  return Date.now() - ts <= 60 * 60 * 1000;
+                })
+                .map((ev) => ({
+                  occurredAt: String(ev.occurredAt),
+                  type: String(ev.type ?? "—"),
+                  description: ev.description ?? null,
+                  deviceSerial: ev.deviceSerial ?? null,
+                  deviceName: ev.deviceName ?? null,
+                  ssidName: ev.ssidName ?? null,
+                  ssidNumber: ev.ssidNumber ?? null,
+                }));
+            } catch (e) {
+              eventsNote = e instanceof Error ? e.message.slice(0, 240) : String(e).slice(0, 240);
+            }
+          } else if (!apiKey) {
+            eventsNote = "Meraki API key not configured";
+          }
+        }
+
+        return {
+          ...detail,
+          wirelessCorrelation: correlation,
+          merakiClientEvents,
+          merakiClientEventsNote: eventsNote,
+        };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         req.log.warn({ err: e, siteId, agentId }, "endpoint agent detail failed");
+        return reply.code(502).send({ error: msg.slice(0, 600) });
+      }
+    },
+  );
+
+  /**
+   * Org-admin only. Dumps the raw TE Endpoint Agent expanded payload plus
+   * the slim wireless snapshot the correlator extracted (and the persisted
+   * snapshot row) so you can pinpoint why an endpoint did or didn't match a
+   * Meraki MR. Intended for debugging only — no UI consumes it.
+   */
+  app.get(
+    "/api/dashboard/sites/:siteId/endpoint-agents/:agentId/wireless-debug",
+    { preHandler: requireOrgAdmin },
+    async (req, reply) => {
+      const { siteId, agentId } = req.params as { siteId: string; agentId: string };
+      const site = await prisma.site.findUnique({ where: { id: siteId } });
+      if (!site) {
+        return reply.code(404).send({ error: "Site not found" });
+      }
+      const snap = await prisma.metricSnapshot.findFirst({
+        where: { siteId, source: "thousandeyes" },
+        orderBy: { capturedAt: "desc" },
+      });
+      if (!snap || !isPayloadRecord(snap.payload)) {
+        return reply.code(404).send({ error: "No ThousandEyes snapshot for this site" });
+      }
+      const payload = snap.payload;
+      const epList = Array.isArray(payload.endpointAgents) ? payload.endpointAgents : [];
+      const persistedAgent = epList.find(
+        (row) => isPayloadRecord(row) && String(row.id ?? "") === agentId,
+      );
+      if (!persistedAgent) {
+        return reply.code(404).send({ error: "Endpoint not in latest snapshot" });
+      }
+
+      const credRow = await prisma.credentialVault.findUnique({
+        where: { provider: "thousandeyes" },
+      });
+      if (!credRow) {
+        return reply.code(503).send({ error: "ThousandEyes token not configured" });
+      }
+      const token = decryptSecretForHttp(
+        credRow.encryptedValue,
+        credRow.iv,
+        credRow.authTag,
+        "ThousandEyes token",
+      );
+      const admin = await getAdminSettings();
+      try {
+        const liveAgent = await getEndpointAgentExpanded(
+          token,
+          agentId,
+          admin.thousandEyesAid?.trim() ? { aid: admin.thousandEyesAid.trim() } : undefined,
+        );
+        const liveSnapshot = snapshotEndpointWireless(liveAgent);
+        return {
+          agentId,
+          snapshotCapturedAt: snap.capturedAt.toISOString(),
+          persistedSlimAgent: persistedAgent,
+          persistedCorrelation: pickAgentCorrelation(payload, agentId),
+          liveRawAgent: liveAgent,
+          liveExtractedSnapshot: liveSnapshot,
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
         return reply.code(502).send({ error: msg.slice(0, 600) });
       }
     },

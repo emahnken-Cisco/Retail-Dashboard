@@ -1,5 +1,17 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { api } from "../api.js";
+import type { WirelessEndpointCorrelation } from "../lib/sitePayloads.js";
+
+/** One Meraki wireless event for the matched client MAC. */
+type MerakiClientEventRow = {
+  occurredAt: string;
+  type: string;
+  description: string | null;
+  deviceSerial: string | null;
+  deviceName: string | null;
+  ssidName: string | null;
+  ssidNumber: number | null;
+};
 
 type EndpointDetailResponse = {
   agent: unknown;
@@ -18,6 +30,12 @@ type EndpointDetailResponse = {
     target: string;
     summary: string;
   }>;
+  /** Pre-computed correlation persisted in the TE snapshot; absent when no Meraki link. */
+  wirelessCorrelation?: WirelessEndpointCorrelation | null;
+  /** Recent Meraki wireless events scoped to the matched client MAC (last hour). */
+  merakiClientEvents?: MerakiClientEventRow[];
+  /** Non-fatal note when the Meraki events fetch failed (rate limit, missing scope, etc.). */
+  merakiClientEventsNote?: string | null;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -93,18 +111,369 @@ function FragmentRow({ k, v }: { k: string; v: string }) {
   );
 }
 
+/**
+ * Wi-Fi correlation between this TE Endpoint Agent and the site's Meraki MR
+ * fleet (computed during TE ingest; events pulled live when the sidecar
+ * opens). Renders three blocks:
+ *   1. Tone badge + reason summary
+ *   2. Connection details (SSID / BSSID / RSSI / SNR / channel / wireless MAC)
+ *   3. Matched MR + recent wireless events for this client MAC
+ *
+ * Always renders something — even for wired endpoints — so the user gets
+ * an explicit "Wi-Fi correlation: wired endpoint, no Meraki MR match"
+ * confirmation rather than a missing section.
+ */
+function WirelessCorrelationSection({
+  correlation,
+  events,
+  eventsNote,
+  onOpenAPLog,
+}: {
+  correlation: WirelessEndpointCorrelation | null;
+  events: MerakiClientEventRow[];
+  eventsNote: string | null;
+  onOpenAPLog?: (mr: { serial: string; name: string | null }) => void;
+}) {
+  const tone = correlation?.tone ?? "neutral";
+  const palette = wifiTonePalette(tone);
+  // Distinguish "snapshot doesn't have correlation data for this agent yet"
+  // (the field is missing on the TE snapshot, usually because TE ingest
+  // hasn't run since the feature shipped or the agent was added after the
+  // last ingest) from "TE actively reported no Wi-Fi connection info".
+  // The two cases used to render identically and that masked deployment
+  // staging issues; now we surface a distinct, actionable hint.
+  // Reason copy hierarchy:
+  //   1) No correlation block at all → ingest hasn't run since feature ship.
+  //   2) Correlation says "no-wireless-data" yet SSID/BSSID exist → stale
+  //      snapshot from before the matching strategy was extended (the new
+  //      ingest will re-classify as healthy / no-match / impacted).
+  //   3) Otherwise use the canonical reason label.
+  const hasAnyWifiHint = Boolean(correlation?.ssid || correlation?.bssid);
+  const reasonText =
+    correlation == null
+      ? "No correlation data in the latest TE snapshot — run TE ingest to populate (Admin → Run job)."
+      : correlation.reason === "no-wireless-data" && hasAnyWifiHint
+        ? "Stale correlation in this snapshot — re-run TE ingest (Admin → Run job) to enable BSSID-based MR matching."
+        : wifiReasonLabel(correlation.reason);
+
+  return (
+    <>
+      <h3 style={{ margin: "1rem 0 0.5rem", fontSize: "0.85rem", color: "var(--muted)" }}>
+        Wi-Fi correlation (Meraki MR)
+      </h3>
+      <div
+        style={{
+          display: "flex",
+          gap: "0.5rem",
+          alignItems: "center",
+          flexWrap: "wrap",
+          marginBottom: "0.5rem",
+        }}
+      >
+        <span
+          style={{
+            display: "inline-flex",
+            alignItems: "center",
+            fontSize: "0.75rem",
+            fontWeight: 600,
+            padding: "0.2rem 0.5rem",
+            borderRadius: 999,
+            background: palette.bg,
+            color: palette.fg,
+            border: `1px solid ${palette.border}`,
+          }}
+        >
+          <span style={{ marginRight: "0.35rem" }}>{wifiToneGlyph(tone)}</span>
+          {wifiToneLabel(tone)}
+        </span>
+        <span style={{ fontSize: "0.75rem", color: "var(--muted)" }}>{reasonText}</span>
+      </div>
+
+      {correlation ? (
+        <dl
+          style={{
+            display: "grid",
+            gridTemplateColumns: "minmax(0, 38%) 1fr",
+            gap: "0.35rem 0.75rem",
+            margin: "0 0 0.5rem",
+            fontSize: "0.78rem",
+          }}
+        >
+          <dt style={{ color: "var(--muted)", margin: 0 }}>Connection</dt>
+          <dd style={{ margin: 0 }}>{correlation.connectionType}</dd>
+          {correlation.ssid ? (
+            <>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>SSID</dt>
+              <dd style={{ margin: 0 }}>{correlation.ssid}</dd>
+            </>
+          ) : null}
+          {correlation.matchedMeraki ? (
+            <>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>Access point</dt>
+              <dd style={{ margin: 0 }}>
+                <span style={{ fontWeight: 600 }}>
+                  {correlation.matchedMeraki.name ?? correlation.matchedMeraki.serial}
+                </span>
+                {correlation.matchMethod === "bssid" ? (
+                  <span
+                    title="Matched via BSSID — TE did not expose this endpoint's client MAC (typical for Android / iOS / managed-MAC fleets)."
+                    style={{
+                      marginLeft: "0.4rem",
+                      fontSize: "0.65rem",
+                      color: "var(--muted)",
+                      padding: "0.05rem 0.35rem",
+                      border: "1px solid var(--surface2)",
+                      borderRadius: 4,
+                    }}
+                  >
+                    via BSSID
+                  </span>
+                ) : null}
+              </dd>
+            </>
+          ) : null}
+          {correlation.bssid ? (
+            <>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>BSSID</dt>
+              <dd style={{ margin: 0, fontFamily: "ui-monospace, monospace" }}>
+                {correlation.bssid}
+                {correlation.matchedMeraki ? (
+                  <span style={{ marginLeft: "0.4rem", fontFamily: "inherit", color: "var(--muted)" }}>
+                    · {correlation.matchedMeraki.name ?? correlation.matchedMeraki.serial}
+                  </span>
+                ) : null}
+              </dd>
+            </>
+          ) : null}
+          {correlation.rssiDbm != null ? (
+            <>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>RSSI</dt>
+              <dd style={{ margin: 0 }}>{correlation.rssiDbm} dBm</dd>
+            </>
+          ) : null}
+          {correlation.signalQualityDb != null ? (
+            <>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>SNR</dt>
+              <dd style={{ margin: 0 }}>{correlation.signalQualityDb} dB</dd>
+            </>
+          ) : null}
+          {correlation.channel != null ? (
+            <>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>Channel</dt>
+              <dd style={{ margin: 0 }}>
+                {correlation.channel}
+                {correlation.channelWidthMhz != null ? ` (${correlation.channelWidthMhz} MHz)` : ""}
+                {correlation.band ? ` · ${correlation.band}` : ""}
+              </dd>
+            </>
+          ) : null}
+          {correlation.wirelessMac ? (
+            <>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>Wireless MAC</dt>
+              <dd style={{ margin: 0, fontFamily: "ui-monospace, monospace" }}>
+                {correlation.wirelessMac}
+              </dd>
+            </>
+          ) : null}
+        </dl>
+      ) : null}
+
+      {correlation?.matchedMeraki ? (
+        <div
+          style={{
+            padding: "0.5rem 0.65rem",
+            background: "var(--surface2)",
+            borderRadius: 6,
+            marginBottom: "0.5rem",
+            fontSize: "0.78rem",
+          }}
+        >
+          <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem", alignItems: "center" }}>
+            <div>
+              <div style={{ fontWeight: 600 }}>
+                Matched MR: {correlation.matchedMeraki.name ?? correlation.matchedMeraki.serial}
+              </div>
+              <div style={{ color: "var(--muted)", fontSize: "0.72rem", fontFamily: "ui-monospace, monospace" }}>
+                {correlation.matchedMeraki.serial}
+              </div>
+              {correlation.matchedMeraki.ssid ? (
+                <div style={{ color: "var(--muted)", fontSize: "0.72rem" }}>
+                  SSID seen by Meraki: {correlation.matchedMeraki.ssid}
+                </div>
+              ) : null}
+            </div>
+            {onOpenAPLog ? (
+              <button
+                type="button"
+                className="btn secondary"
+                style={{ fontSize: "0.72rem", padding: "0.25rem 0.5rem", flexShrink: 0 }}
+                onClick={() =>
+                  onOpenAPLog({
+                    serial: correlation.matchedMeraki!.serial,
+                    name: correlation.matchedMeraki!.name,
+                  })
+                }
+              >
+                Open AP log →
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      <h4 style={{ margin: "0.75rem 0 0.35rem", fontSize: "0.75rem", color: "var(--muted)" }}>
+        Recent Meraki wireless events for this client (last hour)
+      </h4>
+      {eventsNote ? (
+        <p style={{ margin: "0 0 0.5rem", fontSize: "0.72rem", color: "var(--danger)", lineHeight: 1.4 }}>
+          Could not load events: {eventsNote}
+        </p>
+      ) : null}
+      {correlation?.matchedMeraki == null ? (
+        <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--muted)", lineHeight: 1.45 }}>
+          {correlation?.bssid
+            ? "No Meraki match — this BSSID does not belong to an MR known to this org / site. The endpoint may be connected to a non-Meraki AP."
+            : "No Meraki match — events scoped to the agent's wireless MAC are not available."}
+        </p>
+      ) : correlation.matchMethod === "bssid" && events.length === 0 ? (
+        // BSSID-matched endpoints share the AP, but Meraki has no client-MAC
+        // history we can scope events to (TE never reported the client MAC).
+        <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--muted)", lineHeight: 1.45 }}>
+          Matched to this AP via BSSID. Per-client event filtering isn't available because TE
+          didn't report this endpoint's wireless MAC. Use <strong>Open AP log</strong> above for the
+          full AP event stream.
+        </p>
+      ) : events.length === 0 ? (
+        <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--muted)", lineHeight: 1.45 }}>
+          No association / auth / DHCP events recorded for this client in the last hour.
+        </p>
+      ) : (
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={th}>When</th>
+                <th style={th}>Event</th>
+                <th style={th}>AP / SSID</th>
+              </tr>
+            </thead>
+            <tbody>
+              {events.map((ev, idx) => (
+                <tr key={`${ev.occurredAt}-${idx}`}>
+                  <td style={{ ...td, whiteSpace: "nowrap", fontSize: "0.72rem" }}>
+                    {new Date(ev.occurredAt).toLocaleString()}
+                  </td>
+                  <td style={{ ...td, fontSize: "0.72rem" }}>
+                    <div style={{ fontWeight: 600 }}>{ev.type}</div>
+                    {ev.description ? (
+                      <div style={{ color: "var(--muted)", fontSize: "0.7rem", lineHeight: 1.35 }}>
+                        {ev.description}
+                      </div>
+                    ) : null}
+                  </td>
+                  <td style={{ ...td, fontSize: "0.7rem", color: "var(--muted)" }}>
+                    {ev.deviceName || ev.deviceSerial || "—"}
+                    {ev.ssidName ? (
+                      <div>SSID: {ev.ssidName}</div>
+                    ) : null}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p style={{ margin: "0.5rem 0 0", fontSize: "0.7rem", color: "var(--muted)", lineHeight: 1.45 }}>
+        Tone driven by RSSI (admin-configurable amber/red thresholds) plus association / auth / DHCP
+        failures on the matched MR in the last hour. Wired endpoints show as neutral. Want the full
+        AP log? Use <strong>Open AP log</strong> above.
+      </p>
+    </>
+  );
+}
+
+function wifiTonePalette(
+  tone: NonNullable<WirelessEndpointCorrelation>["tone"] | "neutral",
+): { bg: string; fg: string; border: string } {
+  switch (tone) {
+    case "green":
+      return { bg: "rgba(34, 197, 94, 0.18)", fg: "#15803d", border: "rgba(34, 197, 94, 0.35)" };
+    case "amber":
+      return { bg: "rgba(245, 158, 11, 0.18)", fg: "#b45309", border: "rgba(245, 158, 11, 0.4)" };
+    case "red":
+      return { bg: "rgba(239, 68, 68, 0.18)", fg: "#b91c1c", border: "rgba(239, 68, 68, 0.4)" };
+    case "neutral":
+    default:
+      return { bg: "var(--surface2)", fg: "var(--muted)", border: "var(--surface2)" };
+  }
+}
+
+function wifiToneGlyph(tone: NonNullable<WirelessEndpointCorrelation>["tone"] | "neutral"): string {
+  switch (tone) {
+    case "green":
+      return "●";
+    case "amber":
+      return "◐";
+    case "red":
+      return "▲";
+    default:
+      return "○";
+  }
+}
+
+function wifiToneLabel(tone: NonNullable<WirelessEndpointCorrelation>["tone"] | "neutral"): string {
+  switch (tone) {
+    case "green":
+      return "Healthy";
+    case "amber":
+      return "Borderline";
+    case "red":
+      return "Impacted";
+    default:
+      return "n/a";
+  }
+}
+
+function wifiReasonLabel(reason: NonNullable<WirelessEndpointCorrelation>["reason"]): string {
+  switch (reason) {
+    case "wired":
+      return "Endpoint is on Ethernet — no Wi-Fi correlation";
+    case "no-wireless-data":
+      return "TE did not report Wi-Fi connection details for this agent";
+    case "no-meraki-match":
+      return "No Meraki MR client matched the agent's wireless MAC at this site";
+    case "weak-rssi":
+      return "RSSI below the amber threshold";
+    case "poor-rssi":
+      return "RSSI below the red threshold (impacted)";
+    case "recent-failures":
+      return "Recent association / auth / DHCP failures on the matched MR";
+    case "healthy":
+      return "RSSI healthy and no recent failures on the matched MR";
+    default:
+      return "—";
+  }
+}
+
 export function EndpointAgentSidecar({
   siteId,
   agentId,
   subtitle,
   open,
   onClose,
+  onOpenAPLog,
 }: {
   siteId: string;
   agentId: string | null;
   subtitle?: string;
   open: boolean;
   onClose: () => void;
+  /**
+   * Optional callback to hop directly from the Wi-Fi correlation section to
+   * the per-AP connection log sidecar. Closes this sidecar before opening
+   * the log so the user only ever sees one slide-out at a time.
+   */
+  onOpenAPLog?: (mr: { serial: string; name: string | null }) => void;
 }) {
   const [data, setData] = useState<EndpointDetailResponse | null>(null);
   const [err, setErr] = useState("");
@@ -240,6 +609,13 @@ export function EndpointAgentSidecar({
                   still be inferred from the agent profile.
                 </p>
               )}
+
+              <WirelessCorrelationSection
+                correlation={data.wirelessCorrelation ?? null}
+                events={data.merakiClientEvents ?? []}
+                eventsNote={data.merakiClientEventsNote ?? null}
+                onOpenAPLog={onOpenAPLog}
+              />
 
               <h3 style={{ margin: "1rem 0 0.5rem", fontSize: "0.85rem", color: "var(--muted)" }}>
                 Scheduled tests targeting this agent

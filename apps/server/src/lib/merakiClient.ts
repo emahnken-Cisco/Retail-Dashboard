@@ -702,3 +702,128 @@ export async function getNetworkWirelessSsids(
     `/networks/${encodeURIComponent(networkId)}/wireless/ssids`,
   );
 }
+
+/**
+ * Row from `GET /networks/{networkId}/clients` filtered to wireless connections.
+ *
+ * Used by the TE Endpoint Agent ↔ MR correlator: a TE Endpoint Agent's
+ * Wi‑Fi MAC is joined to `mac` here so we can resolve the AP serial
+ * (`recentDeviceSerial`) the device is currently associated to.
+ *
+ * Meraki returns many more fields per client; we only type the ones the
+ * correlator and sidecar surface. Everything else is preserved at the
+ * `Record<string, unknown>` level by the caller if needed.
+ */
+export type MerakiNetworkWirelessClient = {
+  id?: string;
+  mac?: string;
+  description?: string | null;
+  ip?: string | null;
+  user?: string | null;
+  ssid?: string | null;
+  /** "Wired" | "Wireless"; we filter to Wireless. */
+  recentDeviceConnection?: string | null;
+  recentDeviceMac?: string | null;
+  recentDeviceName?: string | null;
+  recentDeviceSerial?: string | null;
+  status?: string | null;
+  firstSeen?: string | null;
+  lastSeen?: string | null;
+  os?: string | null;
+  manufacturer?: string | null;
+};
+
+/**
+ * Row from `GET /organizations/{organizationId}/wireless/ssids/statuses/byDevice`.
+ *
+ * Used by the TE Endpoint Agent ↔ MR correlator as the **primary** matching
+ * path: TE reliably reports the BSSID a client is associated to, and this
+ * endpoint returns every broadcasting BSSID across the org keyed back to
+ * the AP serial. This works for endpoints whose own MAC TE doesn't expose
+ * (Android, some iOS, managed-MAC fleets) where the MAC-based join fails.
+ *
+ * One call per ingest cycle (across all sites in the org), cached for the
+ * run. Requires **wireless:configure:read** (or equivalent) on the API key.
+ */
+export type MerakiWirelessSsidStatusByDevice = {
+  serial?: string;
+  network?: { id?: string; name?: string } | null;
+  basicServiceSets?: Array<{
+    ssid?: { number?: number; name?: string } | null;
+    radio?: { band?: string; channel?: number; channelWidth?: number; isBroadcasting?: boolean } | null;
+    bssid?: string | null;
+    visible?: boolean;
+    broadcasting?: boolean;
+  }>;
+};
+
+/**
+ * Org-wide listing of broadcasting BSSIDs per AP. Always returns full results
+ * (paginated under the hood by Meraki, but the endpoint typically fits in a
+ * single page for retail-scale orgs — use perPage to tune).
+ */
+export async function getOrganizationWirelessSsidsStatusesByDevice(
+  apiKey: string,
+  organizationId: string,
+  opts: { perPage?: number; networkIds?: string[]; serials?: string[] } = {},
+): Promise<MerakiWirelessSsidStatusByDevice[]> {
+  const perPage = Math.min(500, Math.max(3, Math.floor(opts.perPage ?? 500)));
+  const qs = new URLSearchParams();
+  qs.set("perPage", String(perPage));
+  for (const id of opts.networkIds ?? []) qs.append("networkIds[]", id);
+  for (const s of opts.serials ?? []) qs.append("serials[]", s);
+  // The response shape is `{ items: [...] }` paginated; we use the all-pages
+  // helper which transparently follows `Link: …; rel=next` and flattens.
+  // Meraki wraps the array in an `items` field on this endpoint, so we
+  // adapt by walking pages manually.
+  const out: MerakiWirelessSsidStatusByDevice[] = [];
+  let url: string | null =
+    `${MERAKI_BASE}/organizations/${encodeURIComponent(organizationId)}/wireless/ssids/statuses/byDevice?${qs.toString()}`;
+  while (url) {
+    const res = await tracedFetch(
+      url,
+      { headers: merakiHeaders(apiKey) },
+      { provider: "meraki", note: "wireless ssids statuses byDevice" },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Meraki ${res.status}: ${text.slice(0, 500)}`);
+    }
+    const body = (await res.json()) as { items?: MerakiWirelessSsidStatusByDevice[] } | MerakiWirelessSsidStatusByDevice[];
+    if (Array.isArray(body)) {
+      out.push(...body);
+    } else if (body && Array.isArray(body.items)) {
+      out.push(...body.items);
+    }
+    url = parseMerakiNextUrl(res.headers.get("Link"));
+  }
+  return out;
+}
+
+/**
+ * All clients seen on a network in the requested timespan, scoped to wireless.
+ * Used to map TE Endpoint Agent wireless MACs onto the MR serial they
+ * associated with. Requires **dashboard:general:telemetry:read** scope.
+ *
+ * `timespan` accepts seconds (max 2592000 = 30d per Meraki); default 86400 (24h)
+ * so a client that recently roamed off the AP still surfaces.
+ */
+export async function getNetworkWirelessClients(
+  apiKey: string,
+  networkId: string,
+  opts: { timespan?: number; perPage?: number } = {},
+): Promise<MerakiNetworkWirelessClient[]> {
+  const timespan = Math.min(
+    2_592_000,
+    Math.max(120, Math.floor(opts.timespan ?? 86_400)),
+  );
+  const perPage = Math.min(1000, Math.max(3, Math.floor(opts.perPage ?? 1000)));
+  const qs = new URLSearchParams();
+  qs.set("recentDeviceConnections[]", "Wireless");
+  qs.set("timespan", String(timespan));
+  qs.set("perPage", String(perPage));
+  return merakiFetchAllPages<MerakiNetworkWirelessClient>(
+    apiKey,
+    `/networks/${encodeURIComponent(networkId)}/clients?${qs.toString()}`,
+  );
+}

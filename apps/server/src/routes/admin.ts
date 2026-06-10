@@ -37,6 +37,20 @@ const lensesSchema = z
      * still override per-open from the sidecar's toggle.
      */
     wirelessConnLogDefaultWindow: z.enum(["1h", "12h", "24h", "7d"]).optional(),
+    /**
+     * RSSI threshold (dBm) at which a ThousandEyes Endpoint Agent's
+     * Wi-Fi pill flips from green → amber on the dashboard endpoints
+     * table. Stricter (lower / more-negative) values flag more endpoints
+     * as borderline; defaults to -65 which matches common Cisco Wi-Fi
+     * engineering guidance for healthy 5 GHz coverage.
+     */
+    wirelessImpactRssiAmberDbm: z.number().min(-100).max(-20).optional(),
+    /**
+     * RSSI threshold (dBm) at which the pill flips amber → red ("impacted").
+     * Must be ≤ the amber threshold; the correlator swaps them safely if a
+     * reversed pair sneaks through. Defaults to -75 dBm.
+     */
+    wirelessImpactRssiRedDbm: z.number().min(-100).max(-20).optional(),
   })
   .optional();
 
