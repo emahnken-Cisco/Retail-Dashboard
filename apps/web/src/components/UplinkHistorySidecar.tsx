@@ -433,7 +433,7 @@ export function UplinkHistorySidecar({
   applianceModel: string;
   uplink: string;
   merakiStatus: string | null;
-  /** HTTP + agent-to-server tests from the location TE snapshot (same scope as dashboard test tables). */
+  /** HTTP + agent-to-server + agent-to-agent tests from the location TE snapshot (same scope as dashboard test tables). */
   teEnterpriseTests?: TETestRow[];
   /** Opens circuit mapping sidecar (WAN / cellular) when provided. */
   onViewCircuitMapping?: () => void;
