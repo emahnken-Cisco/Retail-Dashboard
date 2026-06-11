@@ -106,17 +106,51 @@ Each endpoint agent row gains a **Wi-Fi** column showing a colored pill:
 
 The pill reads left-to-right as `<SSID> · <MR name> · <RSSI dBm>`.
 
-Hover for a tooltip with the matched MR serial, RSSI, SNR, and recent failure
-count. Click **Open AP log →** to jump to that MR's Wireless Connection Log
-pre-scoped to the right serial. Open the row's **Endpoint agent** detail
-sidecar to see the full correlation block — connection type, SSID, **Access
-point** (the matched MR's name, with a **via BSSID** badge when the BSSID
-fallback fired because TE did not expose the endpoint's client MAC, typical
-on Android / iOS / managed-MAC devices), BSSID, RSSI, SNR, channel, and a
-recent Meraki event timeline.
+Hover for a tooltip with the matched MR serial, RSSI, PHY mode, and recent
+failure count. Click **Open AP log →** to jump to that MR's Wireless
+Connection Log pre-scoped to the right serial. Open the row's **Endpoint
+agent** detail sidecar to see the full correlation block — connection type,
+SSID, **Access point** (the matched MR's name, with a **via BSSID** badge
+when the BSSID fallback fired because TE did not expose the endpoint's
+client MAC, typical on Android / iOS / managed-MAC devices), BSSID, RSSI,
+**PHY mode** (e.g. 802.11ac / 802.11ax), channel, and a recent Meraki
+event timeline.
 
 Tone thresholds are admin-configurable in **Admin → Lenses & data → Wi-Fi
 impact thresholds** (Amber and Red dBm values).
+
+> **Why no SNR or channel-width cells?** The ThousandEyes Endpoint Agents
+> API v7.0.91 schema only contracts `bssid`, `ssid`, `rssi`, `channel`,
+> and `phyMode` on `WirelessProfile`. SNR and channel width are not part
+> of the spec, so those cells were always empty on spec-compliant agents
+> and were removed in v1.3.0. Likewise, the client MAC is not part of
+> the spec — that is why the BSSID fallback is the only way to correlate
+> mobile / managed-MAC endpoints to an MR.
+
+### Endpoint Agent inventory (v1.3.0)
+
+Open any endpoint agent row's **Details** button to see a slide-out with
+the agent's full inventory captured from the TE Endpoint Agents API root
+payload:
+
+- **Serial number** — hardware-issued identifier
+- **NIC model** and **NIC driver version** — strongest on Windows, often
+  null on macOS / mobile
+- **Battery level** and **battery health** — normalized 0–100 % on
+  laptops and mobile devices, null on desktops without a battery
+- **Free disk** — normalized free space percentage
+- **License** — `essentials` / `advantage` / `embedded` per TE's
+  `AgentLicenseType` enum
+- **Agent version** — annotated `(target X.Y.Z)` when TE returns both
+  the current and recommended client version, surfacing drift at a glance
+- **NPCAP driver** — Windows packet-capture driver version
+
+Each row prefers the live per-agent payload and falls back to the snapshot
+inventory so the sidecar renders even when the live ThousandEyes fetch is
+rate-limited. Inventory data also feeds the hover tooltip on the endpoint
+agent table's hostname column, and a monospace `SN <serial>` subtitle
+renders under the hostname when present — no new column was added so
+existing layouts stay clean.
 
 ## Locations and Circuits
 

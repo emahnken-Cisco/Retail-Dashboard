@@ -678,14 +678,19 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
       }
       const epRaw = payload.endpointAgents;
       const epList = Array.isArray(epRaw) ? epRaw : [];
-      const allowed = epList.some(
+      const matchedRow = epList.find(
         (row) => isPayloadRecord(row) && String(row.id ?? "") === agentId,
       );
-      if (!allowed) {
+      if (!isPayloadRecord(matchedRow)) {
         return reply
           .code(403)
           .send({ error: "Endpoint agent is not in the latest site snapshot (run TE ingest after linking)." });
       }
+      // Tier A inventory blob the ingest captured for this snapshot (serial,
+      // NIC, battery, license, etc). Optional — older snapshots from before
+      // the v1.3.0 ingest don't include it and we fall back to whatever the
+      // live agent payload exposes.
+      const snapshotInventory = isPayloadRecord(matchedRow.inventory) ? matchedRow.inventory : null;
 
       const row = await prisma.credentialVault.findUnique({ where: { provider: "thousandeyes" } });
       if (!row) {
@@ -752,6 +757,7 @@ export async function dashboardRoutes(app: FastifyInstance): Promise<void> {
           wirelessCorrelation: correlation,
           merakiClientEvents,
           merakiClientEventsNote: eventsNote,
+          inventory: snapshotInventory,
         };
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);

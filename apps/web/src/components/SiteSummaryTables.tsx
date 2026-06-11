@@ -771,12 +771,36 @@ function EndpointAgentsTableBody({
         </tr>
       </thead>
       <tbody>
-        {rows.map((r) => (
+        {rows.map((r) => {
+          // Build a compact inventory tooltip from the Tier A snapshot blob
+          // (serial / model / OS / NIC / agent version). Skipped when the
+          // snapshot pre-dates the v1.3.0 ingest so the row degrades cleanly.
+          const inv = r.inventory ?? null;
+          const tipLines = inv
+            ? [
+                inv.serialNumber ? `Serial: ${inv.serialNumber}` : null,
+                inv.manufacturer || inv.model
+                  ? `Hardware: ${[inv.manufacturer, inv.model].filter(Boolean).join(" ")}`
+                  : null,
+                inv.osVersion ? `OS: ${inv.osVersion}` : null,
+                inv.nicModel ? `NIC: ${inv.nicModel}` : null,
+                inv.agentVersion ? `TE agent: ${inv.agentVersion}` : null,
+              ].filter(Boolean)
+            : [];
+          const tooltip = tipLines.length > 0 ? tipLines.join("\n") : undefined;
+          return (
           <tr key={r.id}>
             <td style={td}>
-              <strong>{r.hostname}</strong>
+              <strong title={tooltip}>{r.hostname}</strong>
               {r.publicIP ? (
                 <div style={{ fontSize: "0.72rem", color: "var(--muted)" }}>{r.publicIP}</div>
+              ) : null}
+              {inv?.serialNumber ? (
+                <div
+                  style={{ fontSize: "0.68rem", color: "var(--muted)", fontFamily: "ui-monospace, monospace" }}
+                >
+                  SN {inv.serialNumber}
+                </div>
               ) : null}
             </td>
             <td style={{ ...td, color: "var(--muted)", fontSize: "0.78rem" }}>{r.platform}</td>
@@ -810,7 +834,8 @@ function EndpointAgentsTableBody({
               </button>
             </td>
           </tr>
-        ))}
+          );
+        })}
       </tbody>
     </table>
   );

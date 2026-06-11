@@ -49,17 +49,40 @@ export type EndpointWirelessSnapshot = {
   agentId: string;
   /** "Wireless" | "Wired" | "Unknown" — derived from `hardwareType`. */
   connectionType: "Wireless" | "Wired" | "Unknown";
-  /** Wireless adapter MAC, lower-case with no separators if available. */
+  /**
+   * Wireless adapter MAC, lower-case with no separators if available.
+   *
+   * IMPORTANT: TE Endpoint Agents API v7.0.91 does NOT contract this field on
+   * `WirelessProfile` — only `bssid`, `ssid`, `rssi`, `channel`, `phyMode` are
+   * formally exposed. We still read every undocumented name we have seen in
+   * the wild (some platform builds emit them) but spec-compliant endpoints
+   * return null and must rely on BSSID matching instead.
+   */
   wirelessMac: string | null;
   ssid: string | null;
   bssid: string | null;
   rssiDbm: number | null;
+  /**
+   * Signal-to-noise ratio in dB. NOT in the TE v7.0.91 schema — kept for
+   * back-compat with undocumented fields some builds emit. Spec-compliant
+   * agents will always report null here.
+   */
   signalQualityDb: number | null;
   channel: number | null;
-  /** Channel width in MHz (20/40/80/160) when reported. */
+  /**
+   * Channel width in MHz (20/40/80/160). NOT in the TE v7.0.91 schema —
+   * kept for back-compat with undocumented fields. Spec-compliant agents
+   * report null.
+   */
   channelWidthMhz: number | null;
   /** "5 GHz" | "2.4 GHz" | "6 GHz" when bridgeable from `frequency`. */
   band: string | null;
+  /**
+   * 802.11 PHY mode the client negotiated with the AP (e.g. "802.11ac",
+   * "802.11ax"). Sourced from `WirelessProfile.phyMode` which IS in the
+   * TE v7.0.91 schema.
+   */
+  phyMode: string | null;
 };
 
 /** Reasons surfaced in the UI when a tone is amber/red/neutral. */
@@ -84,6 +107,8 @@ export type WirelessEndpointCorrelation = {
   channel: number | null;
   channelWidthMhz: number | null;
   band: string | null;
+  /** 802.11 PHY mode the client negotiated with the AP (spec field). */
+  phyMode: string | null;
   wirelessMac: string | null;
   /** Matched Meraki MR. Populated by either client-MAC or BSSID join. */
   matchedMeraki: {
@@ -185,6 +210,7 @@ export function snapshotEndpointWireless(rawAgent: unknown): EndpointWirelessSna
     channel: null,
     channelWidthMhz: null,
     band: null,
+    phyMode: null,
   };
   if (!isRecord(rawAgent)) return fallback;
   const agentId = String(rawAgent.id ?? "");
@@ -253,6 +279,7 @@ export function snapshotEndpointWireless(rawAgent: unknown): EndpointWirelessSna
       channel: wp ? readFiniteNumber(wp.channel) : null,
       channelWidthMhz: wp ? readFiniteNumber(wp.channelWidth) : null,
       band: bandFromFrequency(freq),
+      phyMode: wp ? toStringIfPresent(wp.phyMode) : null,
     };
   }
 
@@ -442,6 +469,7 @@ export function correlateEndpoint(
     channel: snapshot.channel,
     channelWidthMhz: snapshot.channelWidthMhz,
     band: snapshot.band,
+    phyMode: snapshot.phyMode,
     wirelessMac: snapshot.wirelessMac,
     matchedMeraki: null,
     matchMethod: "none",

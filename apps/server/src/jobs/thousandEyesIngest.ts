@@ -90,6 +90,40 @@ function slimEndpointAgentRow(agent: Record<string, unknown>) {
   // "Unknown" and the wireless fields are null — both flow through the
   // correlator safely and the UI renders a neutral pill.
   const wireless = snapshotEndpointWireless(agent);
+  // Tier A inventory: extract root-level fields TE Endpoint Agents v7.0.91
+  // documents on the EndpointAgent object. All optional — we coerce missing
+  // ones to null so downstream consumers can render a clean "—".
+  const battery = isRecord(agent.batteryMetrics) ? agent.batteryMetrics : null;
+  const inventory = {
+    serialNumber: readStringOrNull(agent.serialNumber),
+    manufacturer: readStringOrNull(agent.manufacturer),
+    model: readStringOrNull(agent.model),
+    osVersion: readStringOrNull(agent.osVersion),
+    kernelVersion: readStringOrNull(agent.kernelVersion),
+    agentVersion: readStringOrNull(agent.version),
+    /** TE’s recommended client version; populated when `expand=targetVersion`. */
+    agentTargetVersion: readStringOrNull(agent.targetVersion),
+    licenseType: readStringOrNull(agent.licenseType),
+    nicModel: readStringOrNull(agent.nicModel),
+    nicDriverVersion: readStringOrNull(agent.nicDriverVersion),
+    totalMemory: readStringOrNull(agent.totalMemory),
+    freeDiskSpaceNormalized: readFiniteCoord(agent.freeDiskSpaceNormalized),
+    numberOfClients:
+      typeof agent.numberOfClients === "number" && Number.isFinite(agent.numberOfClients)
+        ? agent.numberOfClients
+        : null,
+    tcpDriverAvailable:
+      typeof agent.tcpDriverAvailable === "boolean" ? agent.tcpDriverAvailable : null,
+    npcapVersion: readStringOrNull(agent.npcapVersion),
+    /** 0–1 normalized battery health from `batteryMetrics`. */
+    batteryHealthNormalized: battery
+      ? readFiniteCoord(battery.batteryHealthNormalizedPercent)
+      : null,
+    /** 0–1 normalized battery level from `batteryMetrics`. */
+    batteryLevelNormalized: battery
+      ? readFiniteCoord(battery.batteryLevelNormalizedPercent)
+      : null,
+  };
   return {
     id: String(agent.id ?? ""),
     hostname: String(agent.computerName || agent.name || "—"),
@@ -101,6 +135,8 @@ function slimEndpointAgentRow(agent: Record<string, unknown>) {
     publicIP: agent.publicIP != null ? String(agent.publicIP) : "",
     lat: readFiniteCoord(loc?.latitude),
     lng: readFiniteCoord(loc?.longitude),
+    /** Tier A inventory enrichment (TE Endpoint Agents v7.0.91 root fields). */
+    inventory,
     /** Wi‑Fi snapshot used by the correlator and rendered in the endpoint sidecar. */
     wireless: {
       connectionType: wireless.connectionType,
@@ -112,8 +148,16 @@ function slimEndpointAgentRow(agent: Record<string, unknown>) {
       channel: wireless.channel,
       channelWidthMhz: wireless.channelWidthMhz,
       band: wireless.band,
+      phyMode: wireless.phyMode,
     },
   };
+}
+
+/** Coerce TE string-or-null fields to `string | null` with empty-string drop. */
+function readStringOrNull(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s.length > 0 ? s : null;
 }
 
 type SlimEndpointAgent = ReturnType<typeof slimEndpointAgentRow>;
@@ -440,6 +484,7 @@ export async function runThousandEyesIngest(): Promise<void> {
           channel: a.wireless.channel,
           channelWidthMhz: a.wireless.channelWidthMhz,
           band: a.wireless.band,
+          phyMode: a.wireless.phyMode,
         };
         wirelessCorrelations[a.id] = correlateEndpoint(
           snapshot,
