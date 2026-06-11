@@ -208,6 +208,8 @@ export type WirelessEndpointCorrelation = {
   channel: number | null;
   channelWidthMhz: number | null;
   band: string | null;
+  /** 802.11 PHY mode (e.g. "802.11ax"); sourced from TE WirelessProfile.phyMode. */
+  phyMode: string | null;
   wirelessMac: string | null;
   matchedMeraki: {
     serial: string;
@@ -217,6 +219,38 @@ export type WirelessEndpointCorrelation = {
   } | null;
   matchMethod: WirelessEndpointMatchMethod;
   recentFailureCount: number;
+};
+
+/**
+ * Tier A inventory fields surfaced from the TE Endpoint Agents v7.0.91
+ * root EndpointAgent object. All optional — TE does not contract any of
+ * them per platform (e.g. nicModel / nicDriverVersion are typically only
+ * present on Windows, batteryMetrics only on mobile/laptop platforms).
+ */
+export type TEEndpointAgentInventory = {
+  serialNumber: string | null;
+  manufacturer: string | null;
+  model: string | null;
+  osVersion: string | null;
+  kernelVersion: string | null;
+  agentVersion: string | null;
+  /** TE recommended client version when `expand=targetVersion` was requested. */
+  agentTargetVersion: string | null;
+  /** "essentials" / "advantage" / "embedded" per AgentLicenseType enum. */
+  licenseType: string | null;
+  nicModel: string | null;
+  nicDriverVersion: string | null;
+  totalMemory: string | null;
+  /** 0–1 normalized free-disk fraction. */
+  freeDiskSpaceNormalized: number | null;
+  numberOfClients: number | null;
+  tcpDriverAvailable: boolean | null;
+  /** Windows-only NPCAP driver version. */
+  npcapVersion: string | null;
+  /** 0–1 normalized battery health. */
+  batteryHealthNormalized: number | null;
+  /** 0–1 normalized current battery level. */
+  batteryLevelNormalized: number | null;
 };
 
 /** ThousandEyes Endpoint Agent (UUID) scoped to location by TE tag or ~80 km of site lat/lng. */
@@ -231,6 +265,8 @@ export type TEEndpointAgentRow = {
   publicIP: string;
   lat: number | null;
   lng: number | null;
+  /** Tier A inventory enrichment; absent on snapshots from older ingests. */
+  inventory?: TEEndpointAgentInventory;
   /**
    * Pre-computed Wi-Fi correlation against the site's Meraki MR fleet. Absent
    * for snapshots taken before the correlator feature shipped or when the
@@ -308,6 +344,58 @@ function parseTETestsByAgentFromRecord(rawByAgent: unknown): Record<string, TETe
   return Object.keys(m).length > 0 ? m : undefined;
 }
 
+function readStringOrNull(v: unknown): string | null {
+  if (v == null) return null;
+  const s = String(v).trim();
+  return s.length > 0 ? s : null;
+}
+
+/**
+ * Parse the Tier A inventory blob the TE ingest job attaches to each
+ * endpoint row. Returns null when the blob is missing or empty so the
+ * sidecar can render a clear "No inventory captured for this snapshot"
+ * fallback rather than a wall of dashes.
+ */
+function parseEndpointInventory(raw: unknown): TEEndpointAgentInventory | null {
+  if (!isRecord(raw)) return null;
+  const inv: TEEndpointAgentInventory = {
+    serialNumber: readStringOrNull(raw.serialNumber),
+    manufacturer: readStringOrNull(raw.manufacturer),
+    model: readStringOrNull(raw.model),
+    osVersion: readStringOrNull(raw.osVersion),
+    kernelVersion: readStringOrNull(raw.kernelVersion),
+    agentVersion: readStringOrNull(raw.agentVersion),
+    agentTargetVersion: readStringOrNull(raw.agentTargetVersion),
+    licenseType: readStringOrNull(raw.licenseType),
+    nicModel: readStringOrNull(raw.nicModel),
+    nicDriverVersion: readStringOrNull(raw.nicDriverVersion),
+    totalMemory: readStringOrNull(raw.totalMemory),
+    freeDiskSpaceNormalized: readFiniteNumber(raw.freeDiskSpaceNormalized),
+    numberOfClients:
+      typeof raw.numberOfClients === "number" && Number.isFinite(raw.numberOfClients)
+        ? raw.numberOfClients
+        : null,
+    tcpDriverAvailable: typeof raw.tcpDriverAvailable === "boolean" ? raw.tcpDriverAvailable : null,
+    npcapVersion: readStringOrNull(raw.npcapVersion),
+    batteryHealthNormalized: readFiniteNumber(raw.batteryHealthNormalized),
+    batteryLevelNormalized: readFiniteNumber(raw.batteryLevelNormalized),
+  };
+  // Drop the blob if literally nothing was captured.
+  const hasAnything =
+    inv.serialNumber != null ||
+    inv.manufacturer != null ||
+    inv.model != null ||
+    inv.osVersion != null ||
+    inv.agentVersion != null ||
+    inv.nicModel != null ||
+    inv.nicDriverVersion != null ||
+    inv.licenseType != null ||
+    inv.freeDiskSpaceNormalized != null ||
+    inv.batteryHealthNormalized != null ||
+    inv.batteryLevelNormalized != null;
+  return hasAnything ? inv : null;
+}
+
 const WIRELESS_TONES = new Set<WirelessEndpointCorrelationTone>(["green", "amber", "red", "neutral"]);
 const WIRELESS_REASONS = new Set<WirelessEndpointCorrelationReason>([
   "wired",
@@ -371,6 +459,7 @@ function parseWirelessCorrelations(raw: unknown): Record<string, WirelessEndpoin
       channel: readFiniteNumber(entry.channel),
       channelWidthMhz: readFiniteNumber(entry.channelWidthMhz),
       band: entry.band != null ? String(entry.band) : null,
+      phyMode: entry.phyMode != null ? String(entry.phyMode) : null,
       wirelessMac: entry.wirelessMac != null ? String(entry.wirelessMac) : null,
       matchedMeraki,
       matchMethod,
@@ -547,6 +636,10 @@ export function parseTESnapshot(payload: unknown): TESnapshot | null {
         lat: la,
         lng: lo,
       };
+      const inv = parseEndpointInventory(e.inventory);
+      if (inv) {
+        row.inventory = inv;
+      }
       const corr = correlationsByAgentId[id];
       if (corr) {
         row.wirelessCorrelation = corr;

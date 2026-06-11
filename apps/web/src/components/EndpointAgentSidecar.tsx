@@ -1,6 +1,6 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { api } from "../api.js";
-import type { WirelessEndpointCorrelation } from "../lib/sitePayloads.js";
+import type { TEEndpointAgentInventory, WirelessEndpointCorrelation } from "../lib/sitePayloads.js";
 
 /** One Meraki wireless event for the matched client MAC. */
 type MerakiClientEventRow = {
@@ -36,6 +36,12 @@ type EndpointDetailResponse = {
   merakiClientEvents?: MerakiClientEventRow[];
   /** Non-fatal note when the Meraki events fetch failed (rate limit, missing scope, etc.). */
   merakiClientEventsNote?: string | null;
+  /**
+   * Tier A inventory blob the TE ingest extracted from the EndpointAgent
+   * root (serial, NIC, battery, license, etc). Optional — newer snapshots
+   * include it; older ones don't, and the sidecar still renders cleanly.
+   */
+  inventory?: TEEndpointAgentInventory | null;
 };
 
 function isRecord(v: unknown): v is Record<string, unknown> {
@@ -58,12 +64,37 @@ const td: CSSProperties = {
   verticalAlign: "top",
 };
 
-function AgentFieldGrid({ agent }: { agent: unknown }) {
-  if (!isRecord(agent)) {
+/**
+ * Read a field from the live TE EndpointAgent payload first, then fall back
+ * to the slim inventory blob the ingest captured. Lets the sidecar render
+ * even when only one source has the data (e.g. the live agent fetch fails
+ * with 429 but the snapshot is fresh).
+ */
+function pickField(agent: Record<string, unknown> | null, inventoryValue: unknown, agentKey: string): string {
+  const live = agent ? agent[agentKey] : null;
+  if (live != null && String(live).trim() !== "") return String(live);
+  if (inventoryValue != null && String(inventoryValue).trim() !== "") return String(inventoryValue);
+  return "—";
+}
+
+/** Format a 0–1 normalized fraction as a percentage with one decimal. */
+function pctOrDash(v: number | null | undefined): string {
+  if (v == null || !Number.isFinite(v)) return "—";
+  return `${(v * 100).toFixed(1)}%`;
+}
+
+function AgentFieldGrid({
+  agent,
+  inventory,
+}: {
+  agent: unknown;
+  inventory: TEEndpointAgentInventory | null;
+}) {
+  const a = isRecord(agent) ? agent : null;
+  if (!a && !inventory) {
     return <p style={{ color: "var(--muted)", fontSize: "0.85rem" }}>No agent payload.</p>;
   }
-  const a = agent;
-  const clients = Array.isArray(a.clients) ? a.clients : [];
+  const clients = a && Array.isArray(a.clients) ? a.clients : [];
   let userLine = "—";
   if (clients.length > 0 && isRecord(clients[0])) {
     const up = clients[0].userProfile;
@@ -71,19 +102,60 @@ function AgentFieldGrid({ agent }: { agent: unknown }) {
       userLine = String(up.userPrincipalName || up.userName || "—");
     }
   }
+  // Battery: prefer live payload (renders most recent reading), fall back to
+  // the snapshot. TE only emits batteryMetrics on devices that have a
+  // battery, so a null on both sources is meaningful — show "—" not "0%".
+  const liveBattery = a && isRecord(a.batteryMetrics) ? a.batteryMetrics : null;
+  const liveBatteryLevel =
+    liveBattery && typeof liveBattery.batteryLevelNormalizedPercent === "number"
+      ? liveBattery.batteryLevelNormalizedPercent
+      : null;
+  const liveBatteryHealth =
+    liveBattery && typeof liveBattery.batteryHealthNormalizedPercent === "number"
+      ? liveBattery.batteryHealthNormalizedPercent
+      : null;
+  const batteryLevel = liveBatteryLevel ?? inventory?.batteryLevelNormalized ?? null;
+  const batteryHealth = liveBatteryHealth ?? inventory?.batteryHealthNormalized ?? null;
+  const liveFreeDisk =
+    a && typeof a.freeDiskSpaceNormalized === "number" ? a.freeDiskSpaceNormalized : null;
+  const freeDisk = liveFreeDisk ?? inventory?.freeDiskSpaceNormalized ?? null;
+  // Highlight an out-of-date TE agent version when the spec returned both
+  // current `version` and recommended `targetVersion`. We never block on
+  // this — it's just informational text alongside the version.
+  const agentVersion = pickField(a, inventory?.agentVersion, "version");
+  const targetVersion = pickField(a, inventory?.agentTargetVersion, "targetVersion");
+  const versionLine =
+    targetVersion !== "—" && agentVersion !== "—" && targetVersion !== agentVersion
+      ? `${agentVersion} (target ${targetVersion})`
+      : agentVersion;
+
   const rows: [string, string][] = [
-    ["Computer name", String(a.computerName ?? "—")],
-    ["Agent name", String(a.name ?? "—")],
-    ["Platform", String(a.platform ?? "—")],
-    ["OS version", String(a.osVersion ?? "—")],
-    ["Kernel", String(a.kernelVersion ?? "—")],
-    ["Manufacturer / model", `${String(a.manufacturer ?? "—")} · ${String(a.model ?? "—")}`],
-    ["Public IP", String(a.publicIP ?? "—")],
-    ["Total memory (agent)", String(a.totalMemory ?? "—")],
-    ["Agent version", String(a.version ?? "—")],
-    ["Last seen", a.lastSeen ? new Date(String(a.lastSeen)).toLocaleString() : "—"],
+    ["Computer name", pickField(a, null, "computerName")],
+    ["Agent name", pickField(a, null, "name")],
+    ["Platform", pickField(a, null, "platform")],
+    ["OS version", pickField(a, inventory?.osVersion, "osVersion")],
+    ["Kernel", pickField(a, inventory?.kernelVersion, "kernelVersion")],
+    [
+      "Manufacturer / model",
+      `${pickField(a, inventory?.manufacturer, "manufacturer")} · ${pickField(a, inventory?.model, "model")}`,
+    ],
+    ["Serial number", pickField(a, inventory?.serialNumber, "serialNumber")],
+    ["NIC model", pickField(a, inventory?.nicModel, "nicModel")],
+    ["NIC driver version", pickField(a, inventory?.nicDriverVersion, "nicDriverVersion")],
+    ["Battery level", pctOrDash(batteryLevel)],
+    ["Battery health", pctOrDash(batteryHealth)],
+    ["Free disk", pctOrDash(freeDisk)],
+    ["Total memory (agent)", pickField(a, inventory?.totalMemory, "totalMemory")],
+    ["License", pickField(a, inventory?.licenseType, "licenseType")],
+    ["Public IP", pickField(a, null, "publicIP")],
+    ["Agent version", versionLine],
+    ["NPCAP driver", pickField(a, inventory?.npcapVersion, "npcapVersion")],
+    [
+      "Last seen",
+      a?.lastSeen ? new Date(String(a.lastSeen)).toLocaleString() : "—",
+    ],
     ["Logged-in user", userLine],
-    ["Status", String(a.status ?? "—")],
+    ["Status", pickField(a, null, "status")],
   ];
   return (
     <dl
@@ -116,8 +188,13 @@ function FragmentRow({ k, v }: { k: string; v: string }) {
  * fleet (computed during TE ingest; events pulled live when the sidecar
  * opens). Renders three blocks:
  *   1. Tone badge + reason summary
- *   2. Connection details (SSID / BSSID / RSSI / SNR / channel / wireless MAC)
+ *   2. Connection details (SSID / BSSID / RSSI / channel / PHY / wireless MAC)
  *   3. Matched MR + recent wireless events for this client MAC
+ *
+ * Note: SNR + channel-width cells were removed because the TE Endpoint
+ * Agents API v7.0.91 schema does NOT contract those fields on
+ * WirelessProfile — they were always null on spec-compliant agents.
+ * PHY mode (phyMode) IS in the spec and replaces the SNR cell.
  *
  * Always renders something — even for wired endpoints — so the user gets
  * an explicit "Wi-Fi correlation: wired endpoint, no Meraki MR match"
@@ -251,10 +328,10 @@ function WirelessCorrelationSection({
               <dd style={{ margin: 0 }}>{correlation.rssiDbm} dBm</dd>
             </>
           ) : null}
-          {correlation.signalQualityDb != null ? (
+          {correlation.phyMode ? (
             <>
-              <dt style={{ color: "var(--muted)", margin: 0 }}>SNR</dt>
-              <dd style={{ margin: 0 }}>{correlation.signalQualityDb} dB</dd>
+              <dt style={{ color: "var(--muted)", margin: 0 }}>PHY mode</dt>
+              <dd style={{ margin: 0 }}>{correlation.phyMode}</dd>
             </>
           ) : null}
           {correlation.channel != null ? (
@@ -575,7 +652,7 @@ export function EndpointAgentSidecar({
           {data ? (
             <>
               <h3 style={{ margin: "0 0 0.5rem", fontSize: "0.85rem", color: "var(--muted)" }}>Machine</h3>
-              <AgentFieldGrid agent={data.agent} />
+              <AgentFieldGrid agent={data.agent} inventory={data.inventory ?? null} />
 
               <h3 style={{ margin: "1rem 0 0.5rem", fontSize: "0.85rem", color: "var(--muted)" }}>
                 Connectivity & metrics
