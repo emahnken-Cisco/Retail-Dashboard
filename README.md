@@ -2,9 +2,16 @@
 
 Self-hosted Node.js dashboard for retail sites integrating **Cisco Meraki** (MX/MR) and **ThousandEyes** enterprise agents, with Postgres/Supabase storage, optional OIDC (e.g. Cisco SSO), encrypted API credentials, and optional Google Maps.
 
-**Current version:** 1.2.0 — see [CHANGELOG.md](CHANGELOG.md) for details.
+**Current version:** 1.3.0 — see [CHANGELOG.md](CHANGELOG.md) for details.
 
-The 1.2.0 release adds **DHCP** and **Wireless health** sidecars, a per-MR
+The 1.3.0 release adds **Endpoint Agent inventory enrichment** sourced from
+the ThousandEyes Endpoint Agents API v7.0.91 root payload — serial number,
+NIC model, NIC driver version, battery level / health, free disk %, license
+type, and TE agent version-drift annotation surface directly in the
+**Endpoint agent** sidecar. The Wi-Fi correlation block trades the
+always-null **SNR** cell for the spec-contracted **PHY mode** field.
+
+The 1.2.0 release added **DHCP** and **Wireless health** sidecars, a per-MR
 **Wireless Connection Log** slide-out, an admin **Wireless Capacity** matrix,
 and a **TE Endpoint Agent ↔ Meraki MR** Wi-Fi correlation that matches
 endpoints to their AP via client-MAC or BSSID and flags poor RSSI / DHCP /

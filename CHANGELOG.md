@@ -1,5 +1,90 @@
 # Changelog
 
+## 1.3.0 — 2026-06-11
+
+Endpoint inventory enrichment release. Surfaces root-level
+**ThousandEyes Endpoint Agent** fields that the Endpoint Agents API
+v7.0.91 contract exposes but that the dashboard was previously
+discarding: serial number, NIC model, NIC driver version, battery
+level / health, free disk %, TE agent license type and version-drift
+annotation, plus Windows NPCAP driver version. Corrects the Wi-Fi
+correlation block to drop the always-null SNR and channel-width cells
+(not contracted by TE) and adds **PHY mode** (802.11ac / ax / etc.)
+which IS contracted.
+
+### Features
+
+- **Endpoint Agent sidecar — Machine grid** gains rows for:
+  - Serial number (`EndpointAgent.serialNumber`)
+  - NIC model (`EndpointAgent.nicModel`)
+  - NIC driver version (`EndpointAgent.nicDriverVersion`)
+  - Battery level + battery health (`EndpointAgent.batteryMetrics`)
+  - Free disk percentage (`EndpointAgent.freeDiskSpaceNormalized`)
+  - License type (`EndpointAgent.licenseType`)
+  - NPCAP driver version (Windows-only `EndpointAgent.npcapVersion`)
+  - TE agent version with `(target X.Y.Z)` annotation when the spec
+    returns both the current and TE-recommended target version
+  - Each row reads from the live per-agent fetch first, then falls
+    back to the snapshot-captured inventory when the live call is
+    rate-limited or unavailable.
+- **Endpoint Agents table** (`apps/web/src/components/SiteSummaryTables.tsx`):
+  - Hover-tooltip on the hostname shows serial, hardware (manufacturer
+    + model), OS version, NIC, and TE agent version sourced from the
+    snapshot blob.
+  - A monospace `SN <serial>` subtitle renders under the hostname when
+    the snapshot captured one. No new column was added — tight rows
+    were preserved.
+- **Wi-Fi correlation block** (`apps/web/src/components/EndpointAgentSidecar.tsx`,
+  `apps/server/src/lib/wirelessCorrelator.ts`):
+  - **PHY mode** row added, sourced from `WirelessProfile.phyMode`
+    which the TE v7.0.91 spec contracts.
+  - **SNR** row removed. The TE `WirelessProfile` schema does NOT
+    contract `signalToNoiseRatio` / `snr` / `signalQuality`; on
+    spec-compliant agents the cell was always null. Defensive reads
+    are retained on the server in case undocumented builds emit it,
+    but no UI cell is wasted.
+  - The channel-width tag (e.g. `(80 MHz)`) is kept in the channel
+    cell where TE happens to return it but is also noted as non-spec
+    in the type comments.
+
+### Schema / data shape
+
+- `apps/server/src/jobs/thousandEyesIngest.ts` —
+  `slimEndpointAgentRow()` now extracts a Tier A `inventory` blob
+  alongside the existing `wireless` block. The blob is persisted into
+  each TE snapshot, so future ingests round-trip cleanly without
+  needing a separate live fetch per row.
+- `apps/web/src/lib/sitePayloads.ts` — new
+  `TEEndpointAgentInventory` type and `parseEndpointInventory()`
+  parser. Optional on every row so older snapshots from pre-1.3.0
+  ingests degrade to "—" rather than crashing.
+- `apps/server/src/routes/dashboard.ts` — endpoint detail route
+  attaches the snapshot inventory alongside `wirelessCorrelation` and
+  `merakiClientEvents` so the sidecar can render even when the live
+  per-agent fetch fails (e.g. TE 429).
+- `EndpointWirelessSnapshot` and `WirelessEndpointCorrelation` gain a
+  `phyMode: string | null` field that propagates through the
+  correlator and into the persisted snapshot.
+
+### Audit note (TE Endpoint Agents API v7.0.91)
+
+- The TE `WirelessProfile` schema contract is `bssid`, `ssid`, `rssi`,
+  `channel`, `phyMode` — **no client MAC, no SNR, no channel width**.
+  This is why the BSSID-based correlation fallback shipped in 1.2.0 is
+  the right path; the v1.3.0 sidecar copy now reflects that reality.
+- `serialNumber`, `nicModel`, `nicDriverVersion`, and `batteryMetrics`
+  are all on the root `EndpointAgent` object — they are returned by
+  the existing listing call without requiring any new `expand` value
+  or extra permissions.
+
+### Documentation
+
+- Refreshed [README.md](README.md), [docs/USER_GUIDE.md](docs/USER_GUIDE.md),
+  and this changelog. `docs/CONFIGURATION.md` did not need changes
+  (no new env vars or lenses).
+
+---
+
 ## 1.2.0 — 2026-06-10
 
 DHCP / wireless observability release. Adds interactive sidecars for DHCP and
