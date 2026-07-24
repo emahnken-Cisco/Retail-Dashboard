@@ -111,6 +111,28 @@ secrets (Meraki API key, TE bearer, OpenWeather, Google Maps, OIDC client secret
   A re-encrypt migration path exists for zero-downtime rotation; cold rotation is the
   default approach.
 
+## Secret display / API debug viewer
+
+Secrets are never shown in cleartext in the UI:
+
+- **API keys admin list** (`/admin/credentials`): the API returns only a masked form
+  (`****XXXX`) built from the stored last-4; the full secret is never sent back after save.
+- **API debug viewer** (`/debug`): requests are routed through a server-side proxy
+  (`apps/server/src/routes/debugProxy.ts` -> `POST /api/debug/proxy`). The proxy re-issues the
+  call with the caller's own session (RBAC unchanged) and runs the response through
+  `apps/server/src/lib/secretRedaction.ts` (`redactJson` / `redactText`) before returning it, so
+  API keys, bearer tokens, and passwords are replaced with `[REDACTED]` / masked last-4 **before
+  they reach the browser** — the raw key never appears in the response or the DevTools Network tab.
+  The web viewer additionally applies `apps/web/src/lib/maskSecret.ts` as a defense-in-depth pass.
+- **Google Maps JavaScript key**: this is an inherently *public, client-side* key — the Maps SDK
+  cannot load without it in the browser, so it is delivered by `GET /api/dashboard/google-maps-key`
+  and cannot be "hidden" while the interactive map is used. The real control is Google Cloud
+  restrictions: restrict the key by **HTTP referrer** (your dashboard origin) and by **API**
+  (Maps JavaScript API only). Because the map fetches this endpoint directly (not through the debug
+  proxy), redaction there does not break the map, while the debug viewer still masks the value so it
+  cannot be casually dumped/copied. Removing the browser key entirely would require switching to a
+  server-proxied Static Maps approach (loses interactivity) — tracked as future work.
+
 ## SSRF defense for outbound HTTP
 
 `apps/server/src/lib/urlGuard.ts` provides `validateExternalHttpsUrl(url)` used wherever

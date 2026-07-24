@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { api } from "../api.js";
 
-type Cred = { provider: string; last4: string | null; updatedAt: string };
+type Cred = { provider: string; masked: string | null; updatedAt: string };
 
 export function CredentialsPage() {
   const [list, setList] = useState<Cred[]>([]);
@@ -97,7 +97,7 @@ export function CredentialsPage() {
         <ul>
           {list.map((c) => (
             <li key={c.provider}>
-              <strong>{c.provider}</strong> — last4: {c.last4 ?? "n/a"} — {c.updatedAt}
+              <strong>{c.provider}</strong> — key: {c.masked ?? "n/a"} — {c.updatedAt}
             </li>
           ))}
         </ul>

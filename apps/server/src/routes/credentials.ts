@@ -25,7 +25,9 @@ export async function credentialsRoutes(app: FastifyInstance): Promise<void> {
       return {
         credentials: rows.map((r) => ({
           provider: r.provider,
-          last4: r.last4,
+          // Never expose the raw last-4 fragment on its own; return a consistently masked form
+          // (matching maskLast4's `****XXXX` shape) so the UI can render it verbatim.
+          masked: r.last4 ? `****${r.last4}` : null,
           updatedAt: r.updatedAt.toISOString(),
         })),
       };

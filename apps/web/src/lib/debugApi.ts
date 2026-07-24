@@ -9,6 +9,8 @@ export type ApiDebugResult = {
   bodyJson: unknown | null;
 };
 
+const PROXY_ENDPOINT = "/api/debug/proxy";
+
 function normalizePath(path: string): string {
   const trimmed = path.trim();
   const withSlash = trimmed.startsWith("/") ? trimmed : `/${trimmed}`;
@@ -25,39 +27,60 @@ function normalizePath(path: string): string {
 }
 
 /**
- * Performs a same-origin API request and returns the full response for debugging (including non-2xx bodies).
+ * Performs an API request for debugging via the server-side proxy. The proxy re-issues the request
+ * with the caller's session and redacts secrets (API keys, tokens, passwords) from the body before
+ * returning it, so the raw key never reaches the browser — masking here is not just cosmetic.
  */
 export async function fetchApiDebug(path: string, init?: RequestInit): Promise<ApiDebugResult> {
   const url = normalizePath(path);
   const method = (init?.method ?? "GET").toUpperCase();
+  const rawBody = init?.body;
   const t0 = performance.now();
-  const res = await fetch(url, {
-    ...init,
+  const res = await fetch(PROXY_ENDPOINT, {
+    method: "POST",
     credentials: "include",
-    headers: {
-      ...(method !== "GET" && method !== "HEAD" ? { "Content-Type": "application/json" } : {}),
-      ...init?.headers,
-    },
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      path: url,
+      method: method === "POST" ? "POST" : "GET",
+      ...(method === "POST" && typeof rawBody === "string" ? { body: rawBody } : {}),
+    }),
   });
   const durationMs = Math.round(performance.now() - t0);
-  const contentType = res.headers.get("content-type");
-  const bodyText = await res.text();
-  let bodyJson: unknown | null = null;
-  if (contentType?.includes("application/json")) {
-    try {
-      bodyJson = JSON.parse(bodyText) as unknown;
-    } catch {
-      bodyJson = null;
-    }
+
+  const proxyContentType = res.headers.get("content-type");
+  const proxyText = await res.text();
+
+  // The proxy itself returns JSON envelope { status, ok, contentType, bodyText, bodyJson }. If the
+  // proxy request failed (e.g. 401/403/400 from the proxy route), surface that directly.
+  if (!res.ok || !proxyContentType?.includes("application/json")) {
+    return {
+      url,
+      method,
+      status: res.status,
+      ok: false,
+      durationMs,
+      contentType: proxyContentType,
+      bodyText: proxyText,
+      bodyJson: null,
+    };
   }
+
+  let envelope: Partial<ApiDebugResult> & { status?: number; ok?: boolean } = {};
+  try {
+    envelope = JSON.parse(proxyText) as typeof envelope;
+  } catch {
+    envelope = {};
+  }
+
   return {
     url,
     method,
-    status: res.status,
-    ok: res.ok,
+    status: envelope.status ?? res.status,
+    ok: envelope.ok ?? false,
     durationMs,
-    contentType,
-    bodyText,
-    bodyJson,
+    contentType: envelope.contentType ?? null,
+    bodyText: envelope.bodyText ?? "",
+    bodyJson: envelope.bodyJson ?? null,
   };
 }

@@ -20,6 +20,7 @@ import { dashboardRoutes } from "./routes/dashboard.js";
 import { tagsRoutes } from "./routes/tags.js";
 import { circuitsRoutes } from "./routes/circuits.js";
 import { debugOutboundRoutes } from "./routes/debugOutbound.js";
+import { debugProxyRoutes } from "./routes/debugProxy.js";
 import { tlsRoutes } from "./routes/tls.js";
 import { usersRoutes } from "./routes/users.js";
 import { oidcRoutes } from "./routes/oidc.js";
@@ -143,6 +144,7 @@ export async function buildApp() {
   await app.register(tagsRoutes);
   await app.register(circuitsRoutes);
   await app.register(debugOutboundRoutes);
+  await app.register(debugProxyRoutes);
   await app.register(tlsRoutes);
 
   const webDist = resolve(__dirname, "../../web/dist");

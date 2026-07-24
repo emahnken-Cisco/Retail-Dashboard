@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { api } from "../api.js";
 import { useAuth } from "../auth.js";
 import { fetchApiDebug, type ApiDebugResult } from "../lib/debugApi.js";
+import { maskSecretText } from "../lib/maskSecret.js";
 import { canClearOutboundTraces, type UserRole } from "../lib/roles.js";
 
 type OutboundTraceEntry = {
@@ -176,7 +177,7 @@ export function ApiDebugPage() {
     }
     const text =
       result.bodyJson != null ? JSON.stringify(result.bodyJson, null, 2) : result.bodyText;
-    void navigator.clipboard.writeText(text);
+    void navigator.clipboard.writeText(maskSecretText(text));
   };
 
   const historyPath =
@@ -192,8 +193,9 @@ export function ApiDebugPage() {
         ThousandEyes, and OpenWeather (URLs and error bodies are redacted — no API keys in the trace).
       </p>
       <p style={{ color: "var(--warn)", fontSize: "0.85rem", maxWidth: 720 }}>
-        Treat responses as sensitive. Avoid screen-sharing or copying keys if a response includes secrets (e.g. if you
-        manually request an endpoint that returns one).
+        Responses are proxied through the server and API keys, tokens, and passwords are redacted before they reach this
+        page (shown as <code>[REDACTED]</code> or masked to the last 4 characters). Treat responses as sensitive anyway
+        and avoid screen-sharing other operational data.
       </p>
       {role === "LOCATION_CIRCUIT" ? (
         <p style={{ fontSize: "0.85rem", color: "var(--muted)", maxWidth: 720 }}>
@@ -485,8 +487,8 @@ export function ApiDebugPage() {
             }}
           >
             {result.bodyJson != null
-              ? JSON.stringify(result.bodyJson, null, 2)
-              : result.bodyText || "(empty body)"}
+              ? maskSecretText(JSON.stringify(result.bodyJson, null, 2))
+              : maskSecretText(result.bodyText) || "(empty body)"}
           </pre>
         </section>
       ) : null}
