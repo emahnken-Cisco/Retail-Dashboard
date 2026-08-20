@@ -374,12 +374,11 @@ export function LocationMap({
                   >
                     {selectedLocationId === s.id ? (
                       <InfoWindow onCloseClick={() => onSelectLocation(null)}>
-                        <div style={{ maxWidth: 280, paddingRight: 8 }}>
-                          <strong style={{ fontSize: "0.95rem" }}>{s.name}</strong>
-                          <p style={{ margin: "6px 0 0", fontSize: "0.82rem", lineHeight: 1.4 }}>
-                            {mapPinStatusDescription(s)}
-                          </p>
-                          <p style={{ margin: "8px 0 0", fontSize: "0.78rem", color: "#555" }}>
+                        {/* Google InfoWindow is white; do not inherit dark-theme body text colors */}
+                        <div className="map-infowindow" style={{ maxWidth: 280, paddingRight: 8 }}>
+                          <strong className="map-infowindow__title">{s.name}</strong>
+                          <p className="map-infowindow__summary">{mapPinStatusDescription(s)}</p>
+                          <p className="map-infowindow__hint">
                             Full tables (tests, equipment, agents) open in the panel below the map.
                           </p>
                         </div>

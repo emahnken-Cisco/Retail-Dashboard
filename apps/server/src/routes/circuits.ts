@@ -14,6 +14,11 @@ import {
   importBodyShapeSchema,
   validateCircuitImportRows,
 } from "../lib/circuitBulkImport.js";
+import {
+  parseReportDaysParam,
+  RECENT_CIRCUIT_EVENTS_LIST_LIMIT,
+  RECENT_OUTAGE_EVENTS_LIST_LIMIT,
+} from "../lib/reportDays.js";
 
 const connectivityEnum = z.enum(["DIA", "BROADBAND", "SATELLITE", "CELLULAR_4G_5G"]);
 
@@ -348,69 +353,92 @@ export async function circuitsRoutes(app: FastifyInstance): Promise<void> {
   app.get(
     "/api/circuits/reports/outage-summary",
     { preHandler: requireAuth },
-    async (req, reply) => {
+    async (req) => {
       const q = req.query as { days?: string };
-      const days = Math.min(365, Math.max(1, parseInt(q.days ?? "30", 10) || 30));
+      const days = parseReportDaysParam(q.days, 30);
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
-
-      const events = await prisma.circuitOutageEvent.findMany({
-        where: { startedAt: { gte: since } },
-        include: {
-          circuit: {
-            include: { site: { select: { id: true, name: true } } },
-          },
-        },
-        orderBy: { startedAt: "desc" },
-        take: 500,
-      });
-
       const since24h = new Date(Date.now() - 24 * 60 * 60 * 1000);
-      const last24hGroups = await prisma.circuitOutageEvent.groupBy({
-        by: ["circuitId"],
-        where: { startedAt: { gte: since24h } },
-        _count: { _all: true },
-      });
-      const outageStartsLast24hByCircuit = new Map<string, number>(
-        last24hGroups.map((g) => [g.circuitId, g._count._all]),
-      );
+      const whereWindow = { startedAt: { gte: since } };
+
+      const [totalOutageEvents, byCircuitGroups, openEndedGroups, last24hGroups, recentEventsRows] =
+        await Promise.all([
+          prisma.circuitOutageEvent.count({ where: whereWindow }),
+          prisma.circuitOutageEvent.groupBy({
+            by: ["circuitId"],
+            where: whereWindow,
+            _count: { _all: true },
+          }),
+          prisma.circuitOutageEvent.groupBy({
+            by: ["circuitId"],
+            where: { ...whereWindow, endedAt: null },
+            _count: { _all: true },
+          }),
+          prisma.circuitOutageEvent.groupBy({
+            by: ["circuitId"],
+            where: { startedAt: { gte: since24h } },
+            _count: { _all: true },
+          }),
+          prisma.circuitOutageEvent.findMany({
+            where: whereWindow,
+            include: {
+              circuit: {
+                include: { site: { select: { id: true, name: true } } },
+              },
+            },
+            orderBy: { startedAt: "desc" },
+            take: RECENT_OUTAGE_EVENTS_LIST_LIMIT,
+          }),
+        ]);
+
+      const openEndedByCircuit = new Map(openEndedGroups.map((g) => [g.circuitId, g._count._all]));
+      const outageStartsLast24hByCircuit = new Map(last24hGroups.map((g) => [g.circuitId, g._count._all]));
+
+      const circuitIds = byCircuitGroups.map((g) => g.circuitId);
+      const circuits =
+        circuitIds.length > 0
+          ? await prisma.circuit.findMany({
+              where: { id: { in: circuitIds } },
+              include: { site: { select: { name: true } } },
+            })
+          : [];
+      const circuitById = new Map(circuits.map((c) => [c.id, c]));
 
       type Agg = { key: string; outageStarts: number; openEnded: number };
       const byProvider = new Map<string, Agg>();
       const byKind = new Map<string, Agg>();
-      const byCircuit = new Map<string, Agg & { providerName: string; locationName: string; connectivityKind: string }>();
+      const byCircuit = new Map<
+        string,
+        Agg & { providerName: string; locationName: string; connectivityKind: string }
+      >();
 
-      for (const e of events) {
-        const c = e.circuit;
+      for (const g of byCircuitGroups) {
+        const c = circuitById.get(g.circuitId);
+        if (!c) {
+          continue;
+        }
+        const starts = g._count._all;
+        const open = openEndedByCircuit.get(g.circuitId) ?? 0;
         const p = c.providerName.trim() || "—";
         const k = c.connectivityKind;
-        const ck = `${c.id}`;
 
-        const bump = (m: Map<string, Agg>, key: string) => {
+        const bump = (m: Map<string, Agg>, key: string, addStarts: number, addOpen: number) => {
           const cur = m.get(key) ?? { key, outageStarts: 0, openEnded: 0 };
-          cur.outageStarts += 1;
-          if (e.endedAt == null) {
-            cur.openEnded += 1;
-          }
+          cur.outageStarts += addStarts;
+          cur.openEnded += addOpen;
           m.set(key, cur);
         };
 
-        bump(byProvider, p);
-        bump(byKind, k);
+        bump(byProvider, p, starts, open);
+        bump(byKind, k, starts, open);
 
-        const ex =
-          byCircuit.get(ck) ?? {
-            key: ck,
-            outageStarts: 0,
-            openEnded: 0,
-            providerName: c.providerName,
-            locationName: c.site.name,
-            connectivityKind: c.connectivityKind,
-          };
-        ex.outageStarts += 1;
-        if (e.endedAt == null) {
-          ex.openEnded += 1;
-        }
-        byCircuit.set(ck, ex);
+        byCircuit.set(g.circuitId, {
+          key: g.circuitId,
+          outageStarts: starts,
+          openEnded: open,
+          providerName: c.providerName,
+          locationName: c.site.name,
+          connectivityKind: c.connectivityKind,
+        });
       }
 
       const topCircuits = Array.from(byCircuit.values())
@@ -428,14 +456,16 @@ export async function circuitsRoutes(app: FastifyInstance): Promise<void> {
         since: since.toISOString(),
         last24HoursSince: since24h.toISOString(),
         totals: {
-          outageEvents: events.length,
-          uniqueCircuitsAffected: byCircuit.size,
+          outageEvents: totalOutageEvents,
+          uniqueCircuitsAffected: byCircuitGroups.length,
           outageStartsLast24h: last24hGroups.reduce((acc, g) => acc + g._count._all, 0),
         },
         byProvider: Array.from(byProvider.values()).sort((a, b) => b.outageStarts - a.outageStarts),
         byConnectivityKind: Array.from(byKind.values()).sort((a, b) => b.outageStarts - a.outageStarts),
         topCircuitsByOutageCount: topCircuits,
-        recentEvents: events.slice(0, 50).map((e) => {
+        recentEventsListed: recentEventsRows.length,
+        recentEventsTruncated: totalOutageEvents > recentEventsRows.length,
+        recentEvents: recentEventsRows.map((e) => {
           const endMs = e.endedAt ? e.endedAt.getTime() : now.getTime();
           const durationSeconds = Math.max(0, Math.floor((endMs - e.startedAt.getTime()) / 1000));
           return {
@@ -463,10 +493,16 @@ export async function circuitsRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireAuth },
     async (req, reply) => {
       const q = req.query as { days?: string; circuitId?: string; kind?: string };
-      const days = Math.min(365, Math.max(1, parseInt(q.days ?? "30", 10) || 30));
+      const days = parseReportDaysParam(q.days, 30);
       const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
       const circuitId = q.circuitId?.trim() || undefined;
       const kind = q.kind?.trim() || undefined;
+
+      const where = {
+        detectedAt: { gte: since },
+        ...(circuitId ? { circuitId } : {}),
+        ...(kind ? { kind } : {}),
+      };
 
       const base = {
         days,
@@ -476,14 +512,12 @@ export async function circuitsRoutes(app: FastifyInstance): Promise<void> {
       };
 
       try {
-        const rows = await prisma.circuitEvent.findMany({
-          where: {
-            detectedAt: { gte: since },
-            ...(circuitId ? { circuitId } : {}),
-            ...(kind ? { kind } : {}),
-          },
-          orderBy: { detectedAt: "desc" },
-          take: 500,
+        const [totalEvents, rows] = await Promise.all([
+          prisma.circuitEvent.count({ where }),
+          prisma.circuitEvent.findMany({
+            where,
+            orderBy: { detectedAt: "desc" },
+            take: RECENT_CIRCUIT_EVENTS_LIST_LIMIT,
           include: {
             circuit: {
               select: {
@@ -499,10 +533,14 @@ export async function circuitsRoutes(app: FastifyInstance): Promise<void> {
               select: { id: true, startedAt: true, endedAt: true },
             },
           },
-        });
+          }),
+        ]);
 
         return {
           ...base,
+          totalEvents,
+          eventsListed: rows.length,
+          eventsTruncated: totalEvents > rows.length,
           events: rows.map((e) => ({
             id: e.id,
             detectedAt: e.detectedAt.toISOString(),

@@ -304,3 +304,28 @@ button {
   align-items: center;
   margin-bottom: 1rem;
 }
+
+/* Google Maps InfoWindow renders on a white panel outside the dark app shell. */
+.map-infowindow {
+  color: #1a2332;
+}
+
+.map-infowindow__title {
+  display: block;
+  font-size: 0.95rem;
+  color: #0f1419;
+}
+
+.map-infowindow__summary {
+  margin: 6px 0 0;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  color: #1a2332;
+}
+
+.map-infowindow__hint {
+  margin: 8px 0 0;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  color: #4a5568;
+}
