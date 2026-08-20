@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- **Reporting — extended history windows:** Outage summary and circuit events
+  reports support **180 days**, **1 year**, **2 years**, and **3 years** in
+  addition to 7/14/30/90-day ranges. Summary totals use full-window database
+  aggregates; event tables cap at 100 (outages) or 500 (circuit events) with
+  truncation messaging when the window contains more rows.
+- **Admin — circuit event retention:** New **circuit outage / event retention
+  (days)** setting (default **1095**). Retention purge deletes aged
+  `CircuitOutageEvent` and `CircuitEvent` rows separately from metric
+  snapshots.
+
 ## 1.3.0 — 2026-06-11
 
 Endpoint inventory enrichment release. Surfaces root-level

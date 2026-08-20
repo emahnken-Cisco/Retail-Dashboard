@@ -56,6 +56,7 @@ const lensesSchema = z
 
 const settingsPatchSchema = z.object({
   retentionDays: z.number().int().min(1).max(3650).optional(),
+  circuitEventRetentionDays: z.number().int().min(30).max(3650).optional(),
   heartbeatIntervalSec: z.number().int().min(30).max(86400).optional(),
   pollIntervalMerakiSec: z.number().int().min(60).max(86400).optional(),
   pollIntervalTESec: z.number().int().min(60).max(86400).optional(),
@@ -81,6 +82,7 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
       const quota = await getOpenWeatherQuotaSnapshot();
       return {
         retentionDays: row.retentionDays,
+        circuitEventRetentionDays: row.circuitEventRetentionDays,
         heartbeatIntervalSec: row.heartbeatIntervalSec,
         pollIntervalMerakiSec: row.pollIntervalMerakiSec,
         pollIntervalTESec: row.pollIntervalTESec,
@@ -120,6 +122,9 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
 
       const data: Prisma.AdminSettingsUpdateInput = {};
       if (parsed.data.retentionDays !== undefined) data.retentionDays = parsed.data.retentionDays;
+      if (parsed.data.circuitEventRetentionDays !== undefined) {
+        data.circuitEventRetentionDays = parsed.data.circuitEventRetentionDays;
+      }
       if (parsed.data.heartbeatIntervalSec !== undefined) {
         data.heartbeatIntervalSec = parsed.data.heartbeatIntervalSec;
       }
@@ -189,7 +194,13 @@ export async function adminRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: requireOrgAdmin },
     async () => {
       const r = await runRetentionPurge();
-      return { ok: true, deleted: r.deleted };
+      return {
+        ok: true,
+        deleted: r.deletedSnapshots,
+        deletedSnapshots: r.deletedSnapshots,
+        deletedOutageEvents: r.deletedOutageEvents,
+        deletedCircuitEvents: r.deletedCircuitEvents,
+      };
     },
   );
 

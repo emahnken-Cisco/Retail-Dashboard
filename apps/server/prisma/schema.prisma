@@ -218,6 +218,11 @@ model AdminSettings {
   id                     String  @id @default("singleton")
   lenses                 Json    @default("{}")
   retentionDays          Int     @default(90)
+  /**
+   * Purge CircuitOutageEvent and CircuitEvent rows older than this many days (independent of
+   * snapshot retention). Default 1095 (3 years) aligns with max reporting window.
+   */
+  circuitEventRetentionDays Int  @default(1095)
   heartbeatIntervalSec   Int     @default(300)
   pollIntervalMerakiSec  Int     @default(900)
   pollIntervalTESec      Int     @default(900)

@@ -1,6 +1,7 @@
 import { useEffect, useState, type CSSProperties } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../api.js";
+import { REPORT_DAY_OPTIONS } from "../lib/reportDays.js";
 
 type ConnectivityKind = "DIA" | "BROADBAND" | "SATELLITE" | "CELLULAR_4G_5G";
 
@@ -68,11 +69,16 @@ type ReportPayload = {
     merakiInterface: string;
     statusObserved: string;
   }>;
+  recentEventsListed?: number;
+  recentEventsTruncated?: boolean;
 };
 
 type CircuitEventsPayload = {
   days?: number;
   since?: string;
+  totalEvents?: number;
+  eventsListed?: number;
+  eventsTruncated?: boolean;
   /** Present when the CircuitEvent table is missing (migrations not applied). */
   storageWarning?: string;
   events?: Array<{
@@ -166,14 +172,15 @@ export function ReportingPage() {
           <select
             id="rep-days"
             className="input"
-            style={{ width: "5rem" }}
+            style={{ width: "8.5rem" }}
             value={reportDays}
             onChange={(e) => setReportDays(Number.parseInt(e.target.value, 10) || 30)}
           >
-            <option value={7}>7</option>
-            <option value={14}>14</option>
-            <option value={30}>30</option>
-            <option value={90}>90</option>
+            {REPORT_DAY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
           </select>
           <button type="button" className="btn" onClick={() => void loadReport()}>
             Run report
@@ -236,6 +243,12 @@ export function ReportingPage() {
         {report?.recentEvents && report.recentEvents.length > 0 ?
           <div style={{ marginTop: "0.75rem", overflowX: "auto" }}>
             <h3 style={{ fontSize: "0.95rem" }}>Recent events</h3>
+            {report.recentEventsTruncated ? (
+              <p style={{ margin: "0 0 0.5rem", fontSize: "0.72rem", color: "var(--muted)" }}>
+                Showing the {report.recentEventsListed ?? report.recentEvents.length} most recent outage starts in
+                this window. Summary counts above include all {report.totals?.outageEvents ?? "—"} events.
+              </p>
+            ) : null}
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78rem" }}>
               <thead>
                 <tr>
@@ -287,14 +300,15 @@ export function ReportingPage() {
           <select
             id="ce-days"
             className="input"
-            style={{ width: "5rem" }}
+            style={{ width: "8.5rem" }}
             value={circuitEventDays}
             onChange={(e) => setCircuitEventDays(Number.parseInt(e.target.value, 10) || 30)}
           >
-            <option value={7}>7</option>
-            <option value={14}>14</option>
-            <option value={30}>30</option>
-            <option value={90}>90</option>
+            {REPORT_DAY_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>
+                {o.label}
+              </option>
+            ))}
           </select>
           <button type="button" className="btn" onClick={() => void loadCircuitEvents()}>
             Load events
@@ -312,6 +326,12 @@ export function ReportingPage() {
         ) : null}
         {circuitEvents?.events && circuitEvents.events.length > 0 ? (
           <div style={{ overflowX: "auto" }}>
+            {circuitEvents.eventsTruncated ? (
+              <p style={{ margin: "0 0 0.5rem", fontSize: "0.72rem", color: "var(--muted)" }}>
+                Showing the {circuitEvents.eventsListed ?? circuitEvents.events.length} most recent events (
+                {circuitEvents.totalEvents ?? "—"} total in window).
+              </p>
+            ) : null}
             <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.78rem" }}>
               <thead>
                 <tr>

@@ -18,6 +18,7 @@ type TeAccountGroupRow = {
 
 type Settings = {
   retentionDays: number;
+  circuitEventRetentionDays: number;
   heartbeatIntervalSec: number;
   pollIntervalMerakiSec: number;
   pollIntervalTESec: number;
@@ -75,8 +76,20 @@ export function AdminPage() {
 
   async function retention() {
     setTaskMsg("");
-    const r = await api<{ deleted: number }>("/api/admin/tasks/retention", { method: "POST", body: "{}" });
-    setTaskMsg(`Retention completed. Removed ${r.deleted} snapshots.`);
+    const r = await api<{
+      deleted: number;
+      deletedSnapshots?: number;
+      deletedOutageEvents?: number;
+      deletedCircuitEvents?: number;
+    }>("/api/admin/tasks/retention", { method: "POST", body: "{}" });
+    const snaps = r.deletedSnapshots ?? r.deleted;
+    setTaskMsg(
+      `Retention completed. Removed ${snaps} Meraki/TE snapshots` +
+        (typeof r.deletedOutageEvents === "number" || typeof r.deletedCircuitEvents === "number"
+          ? `, ${r.deletedOutageEvents ?? 0} outage events, ${r.deletedCircuitEvents ?? 0} circuit events`
+          : "") +
+        ".",
+    );
     await load();
   }
 
@@ -142,6 +155,24 @@ export function AdminPage() {
             key={s.retentionDays}
             onBlur={(e) => void patch({ retentionDays: Number(e.target.value) })}
           />
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: "var(--muted)", lineHeight: 1.45 }}>
+            Meraki and ThousandEyes <strong>MetricSnapshot</strong> rows older than this are purged on the daily job
+            or &quot;Run retention purge now&quot;.
+          </p>
+        </div>
+        <div className="form-group">
+          <label className="label">Circuit outage / event retention (days)</label>
+          <input
+            type="number"
+            className="input"
+            defaultValue={s.circuitEventRetentionDays}
+            key={s.circuitEventRetentionDays}
+            onBlur={(e) => void patch({ circuitEventRetentionDays: Number(e.target.value) })}
+          />
+          <p style={{ margin: "0.35rem 0 0", fontSize: "0.78rem", color: "var(--muted)", lineHeight: 1.45 }}>
+            <strong>CircuitOutageEvent</strong> and <strong>CircuitEvent</strong> rows older than this are purged
+            separately. Default <strong>1095</strong> (3 years) matches the longest Reporting window.
+          </p>
         </div>
         <div className="form-group">
           <label className="label">Heartbeat interval (seconds)</label>
